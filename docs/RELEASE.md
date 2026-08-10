@@ -21,8 +21,8 @@ Outputs are written under `release/`. If Inno Setup 6 is installed, the script a
 Push a semantic-version tag:
 
 ```powershell
-git tag v2.3.0
-git push origin v2.3.0
+git tag v2.3.1
+git push origin v2.3.1
 ```
 
 The release workflow builds on a clean Windows runner, uploads artifacts, and creates the GitHub Release for version tags.

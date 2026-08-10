@@ -168,7 +168,7 @@ class MainWindow(QMainWindow):
         self.pending_region = None
         self.workers = set()
         self.plot_theme = dict(PLOT_THEMES["深色高对比（推荐）"])
-        self.settings_path = Path(__file__).resolve().parents[1] / "user_data" / "settings.json"
+        self.settings_path = app_data_dir() / "settings.json"
         self.settings = self._load_settings()
         self.fft_timer = QTimer(self)
         self.fft_timer.setSingleShot(True)

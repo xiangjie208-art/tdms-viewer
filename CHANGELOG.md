@@ -2,6 +2,13 @@
 
 All notable changes are documented here. This project follows semantic versioning.
 
+## [2.3.1] - 2026-08-10
+
+- Fixed GitHub Actions installer builds when the optional Inno Setup Simplified Chinese language file is unavailable.
+- Added immediate error handling for failed packaging commands.
+- Updated official GitHub Actions to their Node.js 24-compatible major versions.
+- Fixed portable settings storage so source and frozen builds consistently use the configured private data directory.
+
 ## [2.3.0] - 2026-08-10
 
 - Reorganized the project into a standard `src/` Python package.

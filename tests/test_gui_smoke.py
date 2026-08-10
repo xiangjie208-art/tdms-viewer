@@ -11,6 +11,7 @@ def test_main_window_constructs_with_original_four_panel_controls(tmp_path, monk
     monkeypatch.setenv("TDMS_VIEWER_DATA_DIR", str(tmp_path / "state"))
     app = QApplication.instance() or QApplication([])
     window = MainWindow()
+    assert window.settings_path == tmp_path / "state" / "settings.json"
     assert isinstance(window.controls, QTabWidget)
     assert window.controls.count() == 2
     assert window.start_time_spin is not None

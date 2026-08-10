@@ -1,5 +1,5 @@
 #ifndef MyAppVersion
-  #define MyAppVersion "2.3.0"
+  #define MyAppVersion "2.3.1"
 #endif
 
 #define MyAppName "TDMS Viewer"
@@ -27,7 +27,9 @@ WizardStyle=modern
 LicenseFile=..\LICENSE
 
 [Languages]
+#ifdef IncludeChineseLanguage
 Name: "chinesesimp"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
+#endif
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
