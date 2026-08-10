@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+*.egg-info/
+
+# Build and release outputs
+build/
+dist/
+release/
+*.spec
+SHA256SUMS.txt
+
+# Local/private screening data — never publish these
+**/user_data/**
+!/user_data/.gitkeep
+*.tdms
+*.tdms_index
+*.lnk
+
+# Editor and OS files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+desktop.ini

@@ -1,0 +1,4 @@
+numpy>=1.24
+nptdms>=1.8
+PySide6>=6.6
+pyqtgraph>=0.13

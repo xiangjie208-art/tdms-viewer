@@ -1,0 +1,92 @@
+# TDMS Viewer / TDMS 分子指纹筛选器
+
+面向扫描隧道显微镜（STM）I–t 信号的 Windows 桌面工具，用于快速浏览 TDMS 文件、框选局部时间区间、计算 FFT/Welch 频谱、叠加空白参考并记录候选信号。
+
+> 本工具用于数据预览和初步筛选，不能单独证明分子身份。频谱特征应结合独立重复、空白对照、仪器噪声、工频干扰和统计检验解释。
+
+## 功能
+
+- 读取文件夹中的全部 `.tdms` 文件，并按文件名末尾的采集编号自然排序。
+- 四区界面：左上控制与筛选、右上完整 I–t、左下局部波形、右下 FFT/功率谱。
+- 默认对局部框选区间计算 FFT，也可切换为完整文件。
+- 精确输入局部窗口起点、终点和宽度，支持秒/毫秒。
+- FFT 幅度谱和 Welch 功率谱密度，支持 Hann、Hamming、Blackman 和矩形窗。
+- 从空白文件夹均匀抽取最多 10 条数据，显示中位频谱和四分位范围。
+- 候选、待复查、无明显特征、噪声过大和排除等标记。
+- 保存候选区间、波形/频谱快照，并导出 CSV、PNG、JSON 和 HTML 报告。
+- 深色、浅色和自定义绘图主题。
+
+## 获取与运行
+
+### Windows Release（推荐）
+
+在 GitHub Releases 下载：
+
+- `TDMS-Viewer-Windows-x64.zip`：解压后双击 `TDMS-Viewer.exe`，无需安装 Python。
+- `TDMS-Viewer-Setup-x64.exe`：安装版，可选择创建桌面快捷方式，并创建开始菜单入口。
+
+发布程序尚未进行商业代码签名，Windows SmartScreen 可能显示未知发布者警告。请只从项目的 GitHub Releases 下载，并核对随附 SHA-256。
+
+### 从源码直接运行
+
+需要 Python 3.10–3.13：
+
+```powershell
+python -m pip install -e .
+python run_tdms_viewer.py
+```
+
+在当前便携目录中也可以双击 `安装或修复依赖.cmd`，随后双击 `启动TDMS筛选器.cmd`。
+
+## 基本流程
+
+1. 选择包含 TDMS 文件的数据文件夹。
+2. 可选：选择同条件的空白文件夹。
+3. 在右上总览拖动选择框，或在左上精确输入起点、终点和窗口宽度。
+4. 查看局部波形、频谱分辨率、奈奎斯特频率、主要峰和相对空白倍数。
+5. 将文件标记为候选/待复查等，并保存有意义的局部区间。
+6. 导出筛选报告，供后续统计分析与复核。
+
+## 快捷键
+
+| 快捷键 | 功能 |
+|---|---|
+| `←` / `→` | 将局部窗口移动其宽度的 25% |
+| `Shift + ←` / `Shift + →` | 精细移动 5% |
+| `Ctrl + ←` | 缩窄窗口（× 0.8） |
+| `Ctrl + →` | 加宽窗口（× 1.25） |
+| `↑` / `↓` | 上一条 / 下一条 TDMS |
+| `A` / `R` / `X` | 候选 / 待复查 / 排除 |
+| `S` | 保存当前区间 |
+| `F` | 切换局部/完整 FFT |
+| `Space` | 显示/隐藏空白参考 |
+| `Ctrl + E` | 导出筛选结果 |
+
+## 隐私与数据
+
+- 程序不上传 TDMS 或筛选记录。
+- 本地筛选状态位于 `user_data`；该目录已被 Git 排除。
+- `.tdms`、快照、备注、绝对实验路径和导出结果不得提交到公开仓库。
+- 发布构建不包含 `user_data` 和任何真实实验文件。
+
+详见 [隐私说明](docs/PRIVACY.md) 与 [用户指南](docs/USER_GUIDE.md)。
+
+## 开发
+
+```powershell
+python -m pip install -e ".[dev]"
+pytest
+ruff check .
+```
+
+本地构建 Windows 发布包：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/build_windows.ps1
+```
+
+GitHub Actions 会在 `v*` 标签上自动测试、构建便携 ZIP、生成 SHA-256，并构建带快捷方式选项的安装程序。详见 [发布说明](docs/RELEASE.md)。
+
+## License
+
+[MIT License](LICENSE)

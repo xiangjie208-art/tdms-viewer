@@ -1,0 +1,39 @@
+name: Windows Release
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: choco install innosetup --yes --no-progress
+      - name: Test
+        shell: pwsh
+        run: |
+          python -m pip install -e ".[dev,build]"
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          pytest
+          ruff check .
+      - name: Build portable ZIP and installer
+        shell: pwsh
+        run: ./scripts/build_windows.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TDMS-Viewer-Windows
+          path: release/*
+      - uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          files: release/*
+          generate_release_notes: true
