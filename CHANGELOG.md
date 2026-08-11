@@ -4,6 +4,8 @@ All notable changes are documented here. This project follows semantic versionin
 
 ## [Unreleased]
 
+## [2.4.0] - 2026-08-11
+
 - Added Ctrl/Shift multi-selection for batch deletion and selected-region export.
 - Renamed the region summary export to `feature.csv` and removed `file_marks.csv` from result bundles.
 - Added `I-T_raw_data.csv` with original time/current samples for every exported interval.
