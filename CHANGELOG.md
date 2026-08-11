@@ -2,6 +2,13 @@
 
 All notable changes are documented here. This project follows semantic versioning.
 
+## [Unreleased]
+
+- Added Ctrl/Shift multi-selection for batch deletion and selected-region export.
+- Renamed the region summary export to `feature.csv` and removed `file_marks.csv` from result bundles.
+- Added `I-T_raw_data.csv` with original time/current samples for every exported interval.
+- Renamed exported snapshots using the source file, interval, note, and plot type.
+
 ## [2.3.1] - 2026-08-10
 
 - Fixed GitHub Actions installer builds when the optional Inno Setup Simplified Chinese language file is unavailable.
