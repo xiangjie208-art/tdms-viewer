@@ -55,7 +55,7 @@ def test_it_raw_csv_contains_exact_saved_interval_samples(tmp_path: Path):
     with TdmsWriter(tdms_path) as writer:
         writer.write_segment([channel])
     region = {
-        "file": str(tdms_path), "file_name": tdms_path.name,
+        "file": tdms_path.name, "file_name": tdms_path.name,
         "channel": "Current/Dev1/ai0", "start_s": 0.2, "end_s": 0.4,
         "start_index": 2, "end_index_exclusive": 5, "note": "原始区间",
     }

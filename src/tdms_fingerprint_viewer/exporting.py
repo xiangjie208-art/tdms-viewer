@@ -56,7 +56,10 @@ def unique_export_basename(folder: Path, basename: str, suffixes: tuple[str, ...
 def resolve_region_file(region: dict, data_folder: Path) -> Path | None:
     stored = Path(region.get("file", ""))
     file_name = region.get("file_name") or stored.name
-    candidates = (stored, data_folder / file_name, data_folder / stored.name)
+    if stored.is_absolute():
+        candidates = (stored, data_folder / file_name, data_folder / stored.name)
+    else:
+        candidates = (data_folder / stored, data_folder / file_name)
     return next((candidate for candidate in candidates if candidate.is_file()), None)
 
 

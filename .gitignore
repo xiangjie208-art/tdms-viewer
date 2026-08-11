@@ -22,6 +22,8 @@ SHA256SUMS.txt
 !/user_data/.gitkeep
 *.tdms
 *.tdms_index
+*.tdms-session.json
+*.tdms-session.json.bak
 *.lnk
 
 # Editor and OS files
