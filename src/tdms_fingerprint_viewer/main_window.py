@@ -26,6 +26,10 @@ from .core import (
     common_log_reference, compute_spectrum, discover_tdms, display_spectrum,
     dominant_peaks, load_trace, minmax_envelope, trace_statistics,
 )
+from .exporting import (
+    region_export_basename, unique_export_basename, write_feature_csv,
+    write_it_raw_csv,
+)
 from .session import app_data_dir, load_session, save_session, snapshots_dir
 
 
@@ -324,12 +328,15 @@ class MainWindow(QMainWindow):
         save_layout.addWidget(self.save_mark_button); save_layout.addWidget(self.add_region_button); form.addRow(save_row); layout.addWidget(mark_group)
         layout.addWidget(QLabel("已保存的局部区间（双击可跳转）"))
         self.region_table = QTableWidget(0, 5); self.region_table.setHorizontalHeaderLabels(["文件", "起点/s", "终点/s", "标签", "备注"])
-        self.region_table.setSelectionBehavior(QAbstractItemView.SelectRows); self.region_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.region_table.setSelectionBehavior(QAbstractItemView.SelectRows); self.region_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.region_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.region_table.doubleClicked.connect(self.jump_to_region); self.region_table.horizontalHeader().setStretchLastSection(True); layout.addWidget(self.region_table, 1)
-        row = QHBoxLayout(); self.delete_region_button = QPushButton("删除选中区间"); self.export_results_button = QPushButton("导出筛选结果…")
-        self.delete_region_button.clicked.connect(self.delete_selected_region); self.export_results_button.clicked.connect(self.export_results)
-        row.addWidget(self.delete_region_button); row.addWidget(self.export_results_button); layout.addLayout(row)
-        hint = QLabel("快捷键：←/→ 移动选择框，↑/↓ 切换文件，Shift+←/→ 精细移动，Ctrl+← 缩窄、Ctrl+→ 加宽；A 候选，R 待复查，X 排除，S 保存区间，F 切换 FFT 范围，Space 显示/隐藏空白。")
+        row = QHBoxLayout(); self.delete_region_button = QPushButton("删除选中区间")
+        self.export_selected_button = QPushButton("导出选中信号…"); self.export_results_button = QPushButton("导出全部结果…")
+        self.delete_region_button.clicked.connect(self.delete_selected_region)
+        self.export_selected_button.clicked.connect(self.export_selected_results); self.export_results_button.clicked.connect(self.export_results)
+        row.addWidget(self.delete_region_button); row.addWidget(self.export_selected_button); row.addWidget(self.export_results_button); layout.addLayout(row)
+        hint = QLabel("区间表支持 Ctrl/Shift 多选。快捷键：←/→ 移动选择框，↑/↓ 切换文件，Shift+←/→ 精细移动，Ctrl+← 缩窄、Ctrl+→ 加宽；A 候选，R 待复查，X 排除，S 保存区间，F 切换 FFT 范围，Space 显示/隐藏空白。")
         hint.setWordWrap(True); hint.setStyleSheet("color:#56606A;padding:5px"); layout.addWidget(hint); return tab
 
     def time_display_scale(self):
@@ -611,6 +618,7 @@ class MainWindow(QMainWindow):
             "id": region_id, "file": self.file_key(self.current_path), "file_name": self.current_path.name,
             "channel": self.current_channel.key, "start_s": float(i0 * self.current_channel.dt),
             "end_s": float((i1 - 1) * self.current_channel.dt), "tag": tag,
+            "start_index": i0, "end_index_exclusive": i1, "current_unit": self.current_channel.unit,
             "note": self.note_edit.toPlainText().strip(), "statistics": self.current_stats,
             "peaks": self.last_spectrum["peaks"] if self.last_spectrum else [],
             "spectrum_mode": self.spectrum_mode_combo.currentText(), "window": self.window_combo.currentText(),
@@ -645,14 +653,23 @@ class MainWindow(QMainWindow):
             if file_index == self.file_list.currentRow(): self.load_current_file(self.files[file_index])
             else: self.file_list.setCurrentRow(file_index)
 
+    def selected_region_ids(self):
+        if not self.region_table.selectionModel(): return []
+        rows = sorted({index.row() for index in self.region_table.selectionModel().selectedRows()})
+        return [
+            self.region_table.item(row, 0).data(Qt.UserRole)
+            for row in rows if self.region_table.item(row, 0)
+        ]
+
     def delete_selected_region(self):
-        row = self.region_table.currentRow()
-        if row < 0 or not self.session: return
-        item = self.region_table.item(row, 0)
-        if not item: return
-        if QMessageBox.question(self, "删除区间", "确定删除选中的筛选记录吗？原始 TDMS 不会受影响。") != QMessageBox.Yes: return
-        region_id = item.data(Qt.UserRole)
-        self.session["regions"] = [region for region in self.session.get("regions", []) if region.get("id") != region_id]
+        if not self.session: return
+        region_ids = set(self.selected_region_ids())
+        if not region_ids:
+            QMessageBox.information(self, "删除区间", "请先在区间表中选择一条或多条记录。")
+            return
+        prompt = f"确定删除选中的 {len(region_ids)} 条筛选记录吗？原始 TDMS 不会受影响。"
+        if QMessageBox.question(self, "批量删除区间", prompt) != QMessageBox.Yes: return
+        self.session["regions"] = [region for region in self.session.get("regions", []) if region.get("id") not in region_ids]
         self.save_session_now(); self.refresh_region_table()
 
     def export_local_csv(self):
@@ -670,49 +687,124 @@ class MainWindow(QMainWindow):
         if self.current_path is None: return
         folder = QFileDialog.getExistingDirectory(self, "选择图像导出文件夹", str(self.data_folder))
         if not folder: return
-        output = Path(folder); stem = self.current_path.stem
-        self.overview_plot.grab().save(str(output / f"{stem}_overview.png"), "PNG")
-        self.detail_plot.grab().save(str(output / f"{stem}_local.png"), "PNG")
-        self.spectrum_plot.grab().save(str(output / f"{stem}_spectrum.png"), "PNG")
+        i0, i1 = self.current_indices
+        output = Path(folder)
+        export_region = {
+            "file_name": self.current_path.name,
+            "start_s": i0 * self.current_channel.dt,
+            "end_s": (i1 - 1) * self.current_channel.dt,
+            "note": self.note_edit.toPlainText().strip(),
+        }
+        basename = unique_export_basename(
+            output, region_export_basename(export_region), ("overview", "time", "spectrum")
+        )
+        self.overview_plot.grab().save(str(output / f"{basename}_overview.png"), "PNG")
+        self.detail_plot.grab().save(str(output / f"{basename}_time.png"), "PNG")
+        self.spectrum_plot.grab().save(str(output / f"{basename}_spectrum.png"), "PNG")
         self.statusBar().showMessage(f"当前三张图已导出到 {output}", 6000)
 
     def export_results(self):
+        regions = list((self.session or {}).get("regions", []))
+        self._export_regions(regions, selected_only=False)
+
+    def export_selected_results(self):
+        if not self.session: return
+        region_ids = set(self.selected_region_ids())
+        if not region_ids:
+            QMessageBox.information(self, "导出选中信号", "请先在区间表中选择一条或多条记录。")
+            return
+        regions = [region for region in self.session.get("regions", []) if region.get("id") in region_ids]
+        self._export_regions(regions, selected_only=True)
+
+    def _export_session_state(self, regions, selected_only):
+        state = dict(self.session)
+        state["regions"] = regions
+        if not selected_only:
+            return state
+        file_keys = {region.get("file") for region in regions}
+        file_names = {region.get("file_name") for region in regions}
+        for key in ("file_marks", "file_notes"):
+            state[key] = {
+                file_name: value for file_name, value in self.session.get(key, {}).items()
+                if file_name in file_keys or Path(file_name).name in file_names
+            }
+        return state
+
+    def _snapshot_source(self, region, key):
+        source = Path(region.get(key, ""))
+        if not source.is_file() and source.name:
+            portable_source = snapshots_dir(str(self.data_folder)) / source.name
+            if portable_source.is_file():
+                source = portable_source
+            else:
+                source = next(
+                    (path for path in (app_data_dir() / "snapshots").glob(f"*/{source.name}") if path.is_file()),
+                    source,
+                )
+        return source if source.is_file() else None
+
+    def _unique_result_folder(self, parent, prefix):
+        base = parent / f"{prefix}_{datetime.now():%Y%m%d_%H%M%S}"
+        candidate = base
+        number = 2
+        while candidate.exists():
+            candidate = parent / f"{base.name}_{number}"
+            number += 1
+        return candidate
+
+    def _export_regions(self, regions, selected_only):
         if not self.session or not self.data_folder: return
-        folder = QFileDialog.getExistingDirectory(self, "选择筛选结果导出文件夹", str(self.data_folder))
+        if not regions:
+            QMessageBox.information(self, "导出筛选结果", "当前没有可导出的已保存区间。")
+            return
+        title = "选中信号" if selected_only else "全部筛选结果"
+        folder = QFileDialog.getExistingDirectory(self, f"选择{title}导出文件夹", str(self.data_folder))
         if not folder: return
-        out = Path(folder) / f"TDMS筛选结果_{datetime.now():%Y%m%d_%H%M%S}"; out.mkdir(parents=True, exist_ok=True)
-        marks = self.session.get("file_marks", {}); notes = self.session.get("file_notes", {})
-        with (out / "file_marks.csv").open("w", newline="", encoding="utf-8-sig") as handle:
-            writer = csv.writer(handle); writer.writerow(["file", "tag", "note"])
-            for file_name, tag in marks.items(): writer.writerow([file_name, tag, notes.get(file_name, "")])
-        regions = self.session.get("regions", [])
-        columns = ["file", "channel", "start_s", "end_s", "tag", "note", "mean", "std", "min", "max", "ptp", "peaks"]
-        with (out / "candidate_regions.csv").open("w", newline="", encoding="utf-8-sig") as handle:
-            writer = csv.writer(handle); writer.writerow(columns)
+        prefix = "TDMS选中信号" if selected_only else "TDMS筛选结果"
+        out = self._unique_result_folder(Path(folder), prefix)
+        out.mkdir(parents=True)
+        warnings = []
+        self.set_busy(True, f"正在导出{title}…")
+        QApplication.processEvents()
+        try:
+            write_feature_csv(out / "feature.csv", regions)
+            raw_rows, raw_warnings = write_it_raw_csv(out / "I-T_raw_data.csv", regions, Path(self.data_folder))
+            warnings.extend(raw_warnings)
+            export_state = self._export_session_state(regions, selected_only)
+            (out / "analysis_session.json").write_text(
+                json.dumps(export_state, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            snapshot_out = out / "snapshots"; snapshot_out.mkdir()
             for region in regions:
-                stats = region.get("statistics", {})
-                writer.writerow([region.get("file", ""), region.get("channel", ""), region.get("start_s", ""), region.get("end_s", ""), region.get("tag", ""), region.get("note", ""), stats.get("mean", ""), stats.get("std", ""), stats.get("min", ""), stats.get("max", ""), stats.get("ptp", ""), json.dumps(region.get("peaks", []), ensure_ascii=False)])
-        (out / "analysis_session.json").write_text(json.dumps(self.session, ensure_ascii=False, indent=2), encoding="utf-8")
-        snapshot_out = out / "snapshots"; snapshot_out.mkdir(exist_ok=True)
-        for region in regions:
-            for key in ("time_snapshot", "spectrum_snapshot"):
-                source = Path(region.get(key, ""))
-                if not source.is_file() and source.name:
-                    portable_source = snapshots_dir(str(self.data_folder)) / source.name
-                    if portable_source.is_file(): source = portable_source
+                basename = unique_export_basename(
+                    snapshot_out, region_export_basename(region), ("time", "spectrum")
+                )
+                for key, image_type in (("time_snapshot", "time"), ("spectrum_snapshot", "spectrum")):
+                    source = self._snapshot_source(region, key)
+                    if source:
+                        shutil.copy2(source, snapshot_out / f"{basename}_{image_type}.png")
                     else:
-                        source = next((path for path in (app_data_dir() / "snapshots").glob(f"*/{source.name}") if path.is_file()), source)
-                if source.is_file(): shutil.copy2(source, snapshot_out / source.name)
-        rows = []
-        for region in regions:
-            peaks = ", ".join(f"{f:.5g} Hz" for f, _ in region.get("peaks", [])[:5])
-            rows.append(f"<tr><td>{html.escape(region.get('file_name', ''))}</td><td>{region.get('start_s', 0):.5f}–{region.get('end_s', 0):.5f}</td><td>{html.escape(region.get('tag', ''))}</td><td>{html.escape(peaks)}</td><td>{html.escape(region.get('note', ''))}</td></tr>")
-        report = f"""<!doctype html><meta charset='utf-8'><title>TDMS 筛选结果</title>
+                        warnings.append(f"找不到快照：{region.get('file_name', '')} / {image_type}")
+            rows = []
+            for region in regions:
+                peaks = ", ".join(f"{f:.5g} Hz" for f, _ in region.get("peaks", [])[:5])
+                rows.append(f"<tr><td>{html.escape(region.get('file_name', ''))}</td><td>{region.get('start_s', 0):.5f}–{region.get('end_s', 0):.5f}</td><td>{html.escape(region.get('tag', ''))}</td><td>{html.escape(peaks)}</td><td>{html.escape(region.get('note', ''))}</td></tr>")
+            report = f"""<!doctype html><meta charset='utf-8'><title>TDMS 筛选结果</title>
 <style>body{{font-family:Segoe UI,Microsoft YaHei,sans-serif;margin:32px;color:#263238}}table{{border-collapse:collapse;width:100%}}th,td{{border:1px solid #ccd3d8;padding:7px;text-align:left}}th{{background:#eef2f5}}</style>
-<h1>TDMS 筛选结果</h1><p>数据文件夹：{html.escape(str(self.data_folder))}</p><p>导出时间：{datetime.now():%Y-%m-%d %H:%M:%S}</p>
+<h1>TDMS {title}</h1><p>数据文件夹：{html.escape(str(self.data_folder))}</p><p>导出时间：{datetime.now():%Y-%m-%d %H:%M:%S}</p>
 <table><tr><th>文件</th><th>区间 (s)</th><th>标签</th><th>主要峰</th><th>备注</th></tr>{''.join(rows)}</table>"""
-        (out / "report.html").write_text(report, encoding="utf-8")
-        self.statusBar().showMessage(f"筛选结果已导出：{out}", 8000); QMessageBox.information(self, "导出完成", f"筛选结果已保存到：\n{out}")
+            (out / "report.html").write_text(report, encoding="utf-8")
+        except Exception as exc:
+            self.set_busy(False, "导出失败")
+            QMessageBox.critical(self, "导出失败", f"导出过程中发生错误：\n{exc}\n\n已创建的目录：\n{out}")
+            return
+        message = f"已导出 {len(regions)} 条区间、{raw_rows:,} 个 I–T 数据点：\n{out}"
+        if warnings:
+            preview = "\n".join(f"• {warning}" for warning in warnings[:5])
+            remainder = f"\n另有 {len(warnings) - 5} 条警告。" if len(warnings) > 5 else ""
+            message += f"\n\n导出完成，但有以下警告：\n{preview}{remainder}"
+        self.set_busy(False, f"{title}已导出：{out}")
+        QMessageBox.information(self, "导出完成", message)
 
     def move_region(self, direction, fraction=0.25):
         if self.current_values is None: return
