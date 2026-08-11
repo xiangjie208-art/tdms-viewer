@@ -12,8 +12,8 @@ import uuid
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import QByteArray, QObject, QRunnable, QThreadPool, QTimer, Qt, Signal, Slot
-from PySide6.QtGui import QColor, QKeyEvent
+from PySide6.QtCore import QByteArray, QObject, QRect, QRunnable, QThreadPool, QTimer, Qt, Signal, Slot
+from PySide6.QtGui import QColor, QFont, QKeyEvent, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QColorDialog, QComboBox, QFileDialog,
     QDoubleSpinBox, QFormLayout, QFrame, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListWidget,
@@ -30,7 +30,10 @@ from .exporting import (
     region_export_basename, unique_export_basename, write_feature_csv,
     write_it_raw_csv,
 )
-from .session import app_data_dir, load_session, save_session, snapshots_dir
+from .session import (
+    app_data_dir, load_session, load_session_file, normalize_session,
+    save_session, save_session_file, snapshots_dir,
+)
 
 
 APP_NAME = "TDMS 分子指纹筛选器"
@@ -159,6 +162,7 @@ class MainWindow(QMainWindow):
         self.data_folder = None
         self.blank_folder = None
         self.session = None
+        self.active_session_file = None
         self.current_path = None
         self.current_values = None
         self.current_channel = None
@@ -203,12 +207,19 @@ class MainWindow(QMainWindow):
         if geometry:
             try: self.restoreGeometry(QByteArray.fromBase64(geometry.encode("ascii")))
             except Exception: pass
+        last_session = self.settings.get("last_session_file", "")
         last_folder = self.settings.get("last_data_folder", "")
-        if last_folder and Path(last_folder).is_dir():
+        if last_session and Path(last_session).is_file():
+            QTimer.singleShot(0, lambda: self.open_session_path(Path(last_session), startup=True))
+        elif last_folder and Path(last_folder).is_dir():
             QTimer.singleShot(0, lambda: self.open_data_folder(Path(last_folder)))
 
     def file_key(self, path):
-        return str(Path(path).resolve())
+        resolved = Path(path).resolve()
+        if self.data_folder:
+            try: return resolved.relative_to(Path(self.data_folder).resolve()).as_posix()
+            except ValueError: pass
+        return resolved.name
 
     def _build_ui(self):
         central = QWidget()
@@ -273,6 +284,7 @@ class MainWindow(QMainWindow):
         time_group = QGroupBox("局部时间窗口"); time_form = QFormLayout(time_group)
         self.time_unit_combo = QComboBox(); self.time_unit_combo.addItems(["秒 (s)", "毫秒 (ms)"])
         self.time_unit_combo.currentIndexChanged.connect(self.on_time_unit_changed); time_form.addRow("时间单位", self.time_unit_combo)
+        self.time_unit_combo.currentIndexChanged.connect(self.schedule_session_save)
         self.start_time_spin = QDoubleSpinBox(); self.end_time_spin = QDoubleSpinBox(); self.duration_time_spin = QDoubleSpinBox()
         for spin in (self.start_time_spin, self.end_time_spin, self.duration_time_spin):
             spin.setDecimals(9); spin.setRange(0.0, 1_000_000_000.0); spin.setKeyboardTracking(False); spin.setGroupSeparatorShown(True)
@@ -289,17 +301,22 @@ class MainWindow(QMainWindow):
         self.channel_combo = QComboBox(); self.channel_combo.currentIndexChanged.connect(self.on_channel_changed); settings_form.addRow("数据通道", self.channel_combo)
         self.fft_scope_combo = QComboBox(); self.fft_scope_combo.addItems(["局部框选区间", "完整文件"])
         self.fft_scope_combo.currentIndexChanged.connect(self.schedule_spectrum); settings_form.addRow("FFT 范围", self.fft_scope_combo)
+        self.fft_scope_combo.currentIndexChanged.connect(self.schedule_session_save)
         self.spectrum_mode_combo = QComboBox(); self.spectrum_mode_combo.addItems(["FFT 幅度谱", "功率谱密度 (Welch)"])
         self.spectrum_mode_combo.currentIndexChanged.connect(self.on_spectrum_setting_changed); settings_form.addRow("频谱模式", self.spectrum_mode_combo)
+        self.spectrum_mode_combo.currentIndexChanged.connect(self.schedule_session_save)
         self.window_combo = QComboBox(); self.window_combo.addItems(["Hann", "Hamming", "Blackman", "矩形窗"])
         self.window_combo.currentIndexChanged.connect(self.on_spectrum_setting_changed); settings_form.addRow("窗函数", self.window_combo)
+        self.window_combo.currentIndexChanged.connect(self.schedule_session_save)
         self.log_x_check = QCheckBox("频率对数坐标"); self.log_x_check.setChecked(True)
         self.log_y_check = QCheckBox("幅值对数坐标"); self.log_y_check.setChecked(True)
         self.log_x_check.toggled.connect(self.redraw_spectrum); self.log_y_check.toggled.connect(self.redraw_spectrum)
+        self.log_x_check.toggled.connect(self.schedule_session_save); self.log_y_check.toggled.connect(self.schedule_session_save)
         axes = QWidget(); axes_layout = QHBoxLayout(axes); axes_layout.setContentsMargins(0, 0, 0, 0)
         axes_layout.addWidget(self.log_x_check); axes_layout.addWidget(self.log_y_check); settings_form.addRow("坐标", axes)
         self.blank_overlay_check = QCheckBox("叠加空白中位频谱与四分位范围"); self.blank_overlay_check.setChecked(True)
         self.blank_overlay_check.toggled.connect(self.on_blank_overlay_changed); settings_form.addRow("空白参考", self.blank_overlay_check)
+        self.blank_overlay_check.toggled.connect(self.schedule_session_save)
         layout.addWidget(settings_group)
 
         theme_group = QGroupBox("显示主题"); theme_form = QFormLayout(theme_group)
@@ -312,16 +329,28 @@ class MainWindow(QMainWindow):
         theme_form.addRow("自定义颜色", color_box); layout.addWidget(theme_group)
 
         export_row = QHBoxLayout(); self.export_csv_button = QPushButton("导出局部 CSV"); self.export_image_button = QPushButton("导出当前图像")
+        self.export_combined_button = QPushButton("导出组合图")
         self.export_csv_button.clicked.connect(self.export_local_csv); self.export_image_button.clicked.connect(self.export_current_images)
-        export_row.addWidget(self.export_csv_button); export_row.addWidget(self.export_image_button); layout.addLayout(export_row)
+        self.export_combined_button.clicked.connect(self.export_combined_image)
+        export_row.addWidget(self.export_csv_button); export_row.addWidget(self.export_image_button); export_row.addWidget(self.export_combined_button); layout.addLayout(export_row)
         self.peaks_label = QLabel("主要峰：尚未计算"); self.peaks_label.setWordWrap(True); self.peaks_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         layout.addWidget(self.peaks_label); return tab
 
     def _build_screening_tab(self):
         tab = QWidget(); layout = QVBoxLayout(tab)
+        session_group = QGroupBox("处理会话"); session_layout = QVBoxLayout(session_group)
+        self.session_status_label = QLabel("尚未载入处理会话"); self.session_status_label.setWordWrap(True)
+        session_buttons = QHBoxLayout()
+        self.save_progress_button = QPushButton("保存进度"); self.save_session_as_button = QPushButton("另存会话…")
+        self.open_session_button = QPushButton("打开会话…")
+        self.save_progress_button.clicked.connect(self.save_progress)
+        self.save_session_as_button.clicked.connect(self.save_session_as); self.open_session_button.clicked.connect(self.open_session_dialog)
+        session_buttons.addWidget(self.save_progress_button); session_buttons.addWidget(self.save_session_as_button); session_buttons.addWidget(self.open_session_button)
+        session_layout.addWidget(self.session_status_label); session_layout.addLayout(session_buttons); layout.addWidget(session_group)
         mark_group = QGroupBox("当前文件"); form = QFormLayout(mark_group)
         self.tag_combo = QComboBox(); self.tag_combo.addItems(TAGS); form.addRow("文件标记", self.tag_combo)
         self.note_edit = QPlainTextEdit(); self.note_edit.setPlaceholderText("可记录信号形态、判断依据等…"); self.note_edit.setMaximumHeight(90); form.addRow("备注", self.note_edit)
+        self.tag_combo.currentTextChanged.connect(self.on_current_mark_edited); self.note_edit.textChanged.connect(self.on_current_mark_edited)
         save_row = QWidget(); save_layout = QHBoxLayout(save_row); save_layout.setContentsMargins(0, 0, 0, 0)
         self.save_mark_button = QPushButton("保存文件标记"); self.add_region_button = QPushButton("保存当前区间")
         self.save_mark_button.clicked.connect(self.save_current_mark); self.add_region_button.clicked.connect(self.add_current_region)
@@ -390,6 +419,72 @@ class MainWindow(QMainWindow):
         if folder:
             self.open_data_folder(Path(folder))
 
+    def open_session_dialog(self):
+        start = str(self.active_session_file or self.data_folder or Path.home())
+        path, _ = QFileDialog.getOpenFileName(
+            self, "打开处理会话", start,
+            "TDMS 会话 (*.tdms-session.json *.json);;所有文件 (*)",
+        )
+        if path:
+            self.open_session_path(Path(path))
+
+    def open_session_path(self, path: Path, startup=False):
+        try:
+            state = load_session_file(path)
+        except (OSError, ValueError) as exc:
+            if startup:
+                self.settings.pop("last_session_file", None); self._save_settings()
+                last_folder = self.settings.get("last_data_folder", "")
+                if last_folder and Path(last_folder).is_dir(): self.open_data_folder(Path(last_folder))
+            else:
+                QMessageBox.critical(self, "无法打开会话", str(exc))
+            return
+        folder = Path(state.get("data_folder", ""))
+        try:
+            folder_available = folder.is_dir() and bool(discover_tdms(folder))
+        except OSError:
+            folder_available = False
+        if not folder_available:
+            if startup:
+                self.settings.pop("last_session_file", None); self._save_settings()
+                last_folder = self.settings.get("last_data_folder", "")
+                if last_folder and Path(last_folder).is_dir(): self.open_data_folder(Path(last_folder))
+                return
+            QMessageBox.information(self, "重新定位数据", "原数据文件夹不可用，请选择当前 TDMS 数据文件夹。")
+            selected = QFileDialog.getExistingDirectory(self, "重新定位 TDMS 数据文件夹", str(path.parent))
+            if not selected: return
+            folder = Path(selected).resolve()
+            try:
+                if not discover_tdms(folder):
+                    raise ValueError("所选文件夹中没有 TDMS 文件")
+            except (OSError, ValueError) as exc:
+                QMessageBox.critical(self, "无法定位数据", str(exc)); return
+            state = normalize_session(state, folder)
+        active_file = path if path.name.lower().endswith(".tdms-session.json") else None
+        self.open_data_folder(folder, session_override=state, session_file=active_file)
+
+    def save_progress(self):
+        if not self.session:
+            QMessageBox.information(self, "保存进度", "请先选择 TDMS 数据文件夹。")
+            return
+        if self.save_session_now():
+            self.statusBar().showMessage("处理进度已保存", 4000)
+
+    def save_session_as(self):
+        if not self.session or not self.data_folder:
+            QMessageBox.information(self, "另存会话", "请先选择 TDMS 数据文件夹。")
+            return
+        default = Path(self.data_folder) / f"{self.session.get('session_name') or Path(self.data_folder).name}.tdms-session.json"
+        path, _ = QFileDialog.getSaveFileName(self, "另存处理会话", str(default), "TDMS 会话 (*.tdms-session.json)")
+        if not path: return
+        if not path.lower().endswith(".tdms-session.json"):
+            path += ".tdms-session.json"
+        self.active_session_file = Path(path).resolve()
+        self.session["session_name"] = self.active_session_file.name.removesuffix(".tdms-session.json")
+        self.settings["last_session_file"] = str(self.active_session_file); self._save_settings()
+        if self.save_session_now():
+            QMessageBox.information(self, "会话已保存", f"处理会话已保存到：\n{self.active_session_file}")
+
     def choose_blank_folder(self):
         start = str(self.blank_folder or self.data_folder or Path.home())
         folder = QFileDialog.getExistingDirectory(self, "选择空白 TDMS 文件夹", start)
@@ -400,7 +495,29 @@ class MainWindow(QMainWindow):
             self.blank_reference = None
             if self.blank_overlay_check.isChecked(): self.start_blank_reference()
 
-    def open_data_folder(self, folder: Path):
+    def _apply_processing_controls(self):
+        processing = (self.session or {}).get("processing", {})
+        controls = (
+            (self.time_unit_combo, "time_unit_index", 0, True),
+            (self.fft_scope_combo, "fft_scope", "局部框选区间", False),
+            (self.spectrum_mode_combo, "spectrum_mode", "FFT 幅度谱", False),
+            (self.window_combo, "window", "Hann", False),
+        )
+        for control, key, fallback, by_index in controls:
+            control.blockSignals(True)
+            if by_index:
+                control.setCurrentIndex(int(processing.get(key, fallback)))
+            else:
+                value = str(processing.get(key, fallback))
+                if control.findText(value) >= 0: control.setCurrentText(value)
+            control.blockSignals(False)
+        for control, key, fallback in (
+            (self.log_x_check, "log_x", True), (self.log_y_check, "log_y", True),
+            (self.blank_overlay_check, "blank_overlay", True),
+        ):
+            control.blockSignals(True); control.setChecked(bool(processing.get(key, fallback))); control.blockSignals(False)
+
+    def open_data_folder(self, folder: Path, session_override=None, session_file=None):
         try:
             files = discover_tdms(folder)
         except OSError as exc:
@@ -409,17 +526,26 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "没有数据", "所选文件夹中没有 .tdms 文件。"); return
         self.save_session_now()
         self.data_folder, self.files = folder.resolve(), files
-        self.session = load_session(str(self.data_folder))
+        self.session = normalize_session(session_override, self.data_folder) if session_override else load_session(str(self.data_folder))
+        self.active_session_file = Path(session_file).resolve() if session_file else None
         saved_blank = self.session.get("blank_folder", "")
         self.blank_folder = Path(saved_blank) if saved_blank and Path(saved_blank).is_dir() else None
         self.data_folder_edit.setText(str(self.data_folder)); self.blank_folder_edit.setText(str(self.blank_folder or ""))
-        self.settings["last_data_folder"] = str(self.data_folder); self._save_settings()
+        self.settings["last_data_folder"] = str(self.data_folder)
+        if self.active_session_file: self.settings["last_session_file"] = str(self.active_session_file)
+        else: self.settings.pop("last_session_file", None)
+        self._save_settings(); self._apply_processing_controls()
         self.cache.clear(); self.blank_reference = None
         self.file_list.blockSignals(True); self.file_list.clear()
         for path in files:
             item = QListWidgetItem(); item.setData(Qt.UserRole, str(path)); self.file_list.addItem(item); self.update_file_item(item, path)
         self.file_list.blockSignals(False); self.file_count_label.setText(f"共 {len(files)} 个 TDMS 文件")
-        self.refresh_region_table(); self.file_list.setCurrentRow(0)
+        self.refresh_region_table()
+        current_file = self.session.get("processing", {}).get("current_file", "")
+        target_row = next((index for index, path in enumerate(files) if self.file_key(path) == current_file or path.name == current_file), 0)
+        self.file_list.setCurrentRow(target_row); self.update_session_status()
+        if self.session.pop("_recovered_from_backup", False):
+            QMessageBox.warning(self, "会话已恢复", "主会话文件无法读取，程序已从 .bak 备份恢复处理进度。")
         if self.blank_folder and self.blank_overlay_check.isChecked(): self.start_blank_reference()
 
     def update_file_item(self, item, path):
@@ -430,7 +556,12 @@ class MainWindow(QMainWindow):
 
     def on_file_row_changed(self, row):
         if 0 <= row < len(self.files):
-            self.load_current_file(self.files[row])
+            path = self.files[row]; key = self.file_key(path)
+            processing = (self.session or {}).setdefault("processing", {})
+            channel_key = processing.get("current_channel") if processing.get("current_file") == key else None
+            processing["current_file"] = key
+            if channel_key is None: processing["current_channel"] = ""
+            self.schedule_session_save(); self.load_current_file(path, channel_key)
 
     def load_current_file(self, path, channel_key=None):
         self.load_token += 1; token = self.load_token
@@ -452,6 +583,10 @@ class MainWindow(QMainWindow):
         if result["token"] != self.load_token: return
         self.current_path = Path(result["path"]); self.current_values = result["values"]
         self.current_channel = result["selected"]; self.current_channels = result["channels"]
+        if self.session is not None:
+            processing = self.session.setdefault("processing", {})
+            processing["current_file"] = self.file_key(self.current_path); processing["current_channel"] = self.current_channel.key
+            self.schedule_session_save()
         self.last_spectrum = None; self.peaks_label.setText("主要峰：正在计算…")
         plot_item = self.spectrum_plot.getPlotItem(); plot_item.clear()
         canonical = dict(result); canonical.pop("token", None)
@@ -589,16 +724,23 @@ class MainWindow(QMainWindow):
     def load_current_mark(self):
         if not self.session or not self.current_path: return
         key = self.file_key(self.current_path)
+        self.tag_combo.blockSignals(True); self.note_edit.blockSignals(True)
         self.tag_combo.setCurrentText(self.session.get("file_marks", {}).get(key, self.session.get("file_marks", {}).get(self.current_path.name, "未标记")))
         self.note_edit.setPlainText(self.session.get("file_notes", {}).get(key, self.session.get("file_notes", {}).get(self.current_path.name, "")))
+        self.tag_combo.blockSignals(False); self.note_edit.blockSignals(False)
 
-    def save_current_mark(self, silent=False):
+    def on_current_mark_edited(self, *_):
         if not self.session or not self.current_path: return
         key = self.file_key(self.current_path)
         self.session.setdefault("file_marks", {})[key] = self.tag_combo.currentText()
         self.session.setdefault("file_notes", {})[key] = self.note_edit.toPlainText().strip()
         row = self.file_list.currentRow()
         if 0 <= row < len(self.files): self.update_file_item(self.file_list.item(row), self.current_path)
+        self.schedule_session_save(); self.update_session_status(pending=True)
+
+    def save_current_mark(self, silent=False):
+        if not self.session or not self.current_path: return
+        self.on_current_mark_edited()
         self.save_session_now()
         if not silent: self.statusBar().showMessage(f"已保存：{self.current_path.name} → {self.tag_combo.currentText()}", 3500)
 
@@ -612,8 +754,9 @@ class MainWindow(QMainWindow):
         self.save_current_mark(silent=True)
         region_id = uuid.uuid4().hex[:12]
         snapshot_folder = snapshots_dir(str(self.data_folder))
+        overview_path = snapshot_folder / f"{region_id}_overview.png"
         detail_path = snapshot_folder / f"{region_id}_time.png"; spectrum_path = snapshot_folder / f"{region_id}_spectrum.png"
-        self.detail_plot.grab().save(str(detail_path), "PNG"); self.spectrum_plot.grab().save(str(spectrum_path), "PNG")
+        combined_path = snapshot_folder / f"{region_id}_combined.png"
         record = {
             "id": region_id, "file": self.file_key(self.current_path), "file_name": self.current_path.name,
             "channel": self.current_channel.key, "start_s": float(i0 * self.current_channel.dt),
@@ -622,9 +765,13 @@ class MainWindow(QMainWindow):
             "note": self.note_edit.toPlainText().strip(), "statistics": self.current_stats,
             "peaks": self.last_spectrum["peaks"] if self.last_spectrum else [],
             "spectrum_mode": self.spectrum_mode_combo.currentText(), "window": self.window_combo.currentText(),
-            "time_snapshot": str(detail_path), "spectrum_snapshot": str(spectrum_path),
+            "overview_snapshot": str(overview_path), "time_snapshot": str(detail_path),
+            "spectrum_snapshot": str(spectrum_path), "combined_snapshot": str(combined_path),
             "created_at": datetime.now().isoformat(timespec="seconds"),
         }
+        self.overview_plot.grab().save(str(overview_path), "PNG")
+        self.detail_plot.grab().save(str(detail_path), "PNG"); self.spectrum_plot.grab().save(str(spectrum_path), "PNG")
+        self.combined_plot_pixmap(record).save(str(combined_path), "PNG")
         self.session.setdefault("regions", []).append(record)
         self.save_session_now(); self.refresh_region_table()
         self.statusBar().showMessage(f"已保存候选区间：{record['start_s']:.4f}–{record['end_s']:.4f} s", 5000)
@@ -683,6 +830,56 @@ class MainWindow(QMainWindow):
             for index, value in enumerate(values, i0): writer.writerow([index * self.current_channel.dt, value])
         self.statusBar().showMessage(f"已导出 {len(values):,} 点：{path}", 6000)
 
+    def combined_plot_pixmap(self, region=None):
+        if region is None:
+            i0, i1 = self.current_indices
+            region = {
+                "file_name": self.current_path.name if self.current_path else "signal.tdms",
+                "channel": self.current_channel.key if self.current_channel else "",
+                "start_s": i0 * self.current_channel.dt if self.current_channel else 0.0,
+                "end_s": (i1 - 1) * self.current_channel.dt if self.current_channel and i1 else 0.0,
+                "note": self.note_edit.toPlainText().strip(),
+            }
+        overview = self.overview_plot.grab(); detail = self.detail_plot.grab()
+        target_width = max(900, overview.width(), detail.width())
+        content_width = target_width - 48
+        overview = overview.scaledToWidth(content_width, Qt.SmoothTransformation)
+        detail = detail.scaledToWidth(content_width, Qt.SmoothTransformation)
+        title_height, panel_height, gap, padding = 82, 34, 18, 24
+        total_height = title_height + panel_height + overview.height() + gap + panel_height + detail.height() + padding
+        canvas = QPixmap(target_width, total_height); canvas.fill(QColor(self.plot_theme["background"]))
+        painter = QPainter(canvas); foreground = QColor(self.plot_theme["foreground"]); accent = QColor(self.plot_theme["region"])
+        painter.setPen(foreground); painter.setFont(QFont("Microsoft YaHei UI", 16, QFont.DemiBold))
+        painter.drawText(QRect(padding, 8, content_width, 30), Qt.AlignCenter, "I–T 信号全局—局部组合图")
+        metadata = (
+            f"{region.get('file_name', '')}  ·  {region.get('channel', '')}  ·  "
+            f"选区 {float(region.get('start_s', 0)):.5f}–{float(region.get('end_s', 0)):.5f} s  ·  "
+            f"备注：{region.get('note') or '无备注'}"
+        )
+        painter.setFont(QFont("Microsoft YaHei UI", 9)); metadata = painter.fontMetrics().elidedText(metadata, Qt.ElideRight, content_width)
+        painter.drawText(QRect(padding, 42, content_width, 25), Qt.AlignCenter, metadata)
+        y = title_height; painter.setPen(accent); painter.setFont(QFont("Microsoft YaHei UI", 11, QFont.DemiBold))
+        painter.drawText(QRect(padding, y, content_width, panel_height), Qt.AlignLeft | Qt.AlignVCenter, "A  全局 I–T 信号")
+        y += panel_height; painter.drawPixmap(padding, y, overview); y += overview.height() + gap
+        painter.drawText(QRect(padding, y, content_width, panel_height), Qt.AlignLeft | Qt.AlignVCenter, "B  选区局部放大")
+        y += panel_height; painter.drawPixmap(padding, y, detail); painter.end()
+        return canvas
+
+    def export_combined_image(self):
+        if self.current_path is None or self.current_channel is None: return
+        folder = QFileDialog.getExistingDirectory(self, "选择组合图导出文件夹", str(self.data_folder))
+        if not folder: return
+        i0, i1 = self.current_indices
+        region = {
+            "file_name": self.current_path.name, "channel": self.current_channel.key,
+            "start_s": i0 * self.current_channel.dt, "end_s": (i1 - 1) * self.current_channel.dt,
+            "note": self.note_edit.toPlainText().strip(),
+        }
+        output = Path(folder); basename = unique_export_basename(output, region_export_basename(region), ("combined",))
+        path = output / f"{basename}_combined.png"
+        self.combined_plot_pixmap(region).save(str(path), "PNG")
+        self.statusBar().showMessage(f"全局—局部组合图已导出：{path}", 6000)
+
     def export_current_images(self):
         if self.current_path is None: return
         folder = QFileDialog.getExistingDirectory(self, "选择图像导出文件夹", str(self.data_folder))
@@ -691,17 +888,19 @@ class MainWindow(QMainWindow):
         output = Path(folder)
         export_region = {
             "file_name": self.current_path.name,
+            "channel": self.current_channel.key,
             "start_s": i0 * self.current_channel.dt,
             "end_s": (i1 - 1) * self.current_channel.dt,
             "note": self.note_edit.toPlainText().strip(),
         }
         basename = unique_export_basename(
-            output, region_export_basename(export_region), ("overview", "time", "spectrum")
+            output, region_export_basename(export_region), ("overview", "time", "spectrum", "combined")
         )
         self.overview_plot.grab().save(str(output / f"{basename}_overview.png"), "PNG")
         self.detail_plot.grab().save(str(output / f"{basename}_time.png"), "PNG")
         self.spectrum_plot.grab().save(str(output / f"{basename}_spectrum.png"), "PNG")
-        self.statusBar().showMessage(f"当前三张图已导出到 {output}", 6000)
+        self.combined_plot_pixmap(export_region).save(str(output / f"{basename}_combined.png"), "PNG")
+        self.statusBar().showMessage(f"当前图像及组合图已导出到 {output}", 6000)
 
     def export_results(self):
         regions = list((self.session or {}).get("regions", []))
@@ -776,14 +975,18 @@ class MainWindow(QMainWindow):
             )
             snapshot_out = out / "snapshots"; snapshot_out.mkdir()
             for region in regions:
-                basename = unique_export_basename(
-                    snapshot_out, region_export_basename(region), ("time", "spectrum")
+                image_specs = (
+                    ("overview_snapshot", "overview", False), ("time_snapshot", "time", True),
+                    ("spectrum_snapshot", "spectrum", True), ("combined_snapshot", "combined", False),
                 )
-                for key, image_type in (("time_snapshot", "time"), ("spectrum_snapshot", "spectrum")):
+                basename = unique_export_basename(
+                    snapshot_out, region_export_basename(region), tuple(spec[1] for spec in image_specs)
+                )
+                for key, image_type, required in image_specs:
                     source = self._snapshot_source(region, key)
                     if source:
                         shutil.copy2(source, snapshot_out / f"{basename}_{image_type}.png")
-                    else:
+                    elif required:
                         warnings.append(f"找不到快照：{region.get('file_name', '')} / {image_type}")
             rows = []
             for region in regions:
@@ -868,13 +1071,60 @@ class MainWindow(QMainWindow):
             button.setStyleSheet(f"background:{color.name()};color:{text};border:1px solid #777;padding:4px")
         self.redraw_spectrum()
 
-    def schedule_session_save(self):
+    def capture_processing_state(self):
+        if self.session is None: return
+        processing = self.session.setdefault("processing", {})
+        row = self.file_list.currentRow()
+        selected_path = self.files[row] if 0 <= row < len(self.files) else self.current_path
+        if selected_path: processing["current_file"] = self.file_key(selected_path)
+        if self.current_channel and self.current_path and selected_path and Path(self.current_path).resolve() == Path(selected_path).resolve():
+            processing["current_channel"] = self.current_channel.key
+        processing.update({
+            "time_unit_index": self.time_unit_combo.currentIndex(),
+            "fft_scope": self.fft_scope_combo.currentText(),
+            "spectrum_mode": self.spectrum_mode_combo.currentText(),
+            "window": self.window_combo.currentText(),
+            "log_x": self.log_x_check.isChecked(), "log_y": self.log_y_check.isChecked(),
+            "blank_overlay": self.blank_overlay_check.isChecked(),
+        })
+
+    def processed_file_count(self):
+        if not self.session: return 0
+        processed = {
+            key for key, tag in self.session.get("file_marks", {}).items()
+            if tag and tag != "未标记"
+        }
+        processed.update(key for key, note in self.session.get("file_notes", {}).items() if str(note).strip())
+        processed.update(region.get("file") for region in self.session.get("regions", []) if region.get("file"))
+        available = {self.file_key(path) for path in self.files}
+        return len(processed & available)
+
+    def update_session_status(self, pending=False):
+        if not hasattr(self, "session_status_label") or not self.session:
+            return
+        name = self.session.get("session_name") or (self.data_folder.name if self.data_folder else "默认会话")
+        updated = self.session.get("updated_at", "")
+        saved_text = "等待自动保存" if pending else (updated.replace("T", " ") if updated else "尚未保存")
+        self.session_status_label.setText(
+            f"会话：{name} ｜ 已处理 {self.processed_file_count()}/{len(self.files)} ｜ {saved_text}"
+        )
+
+    def schedule_session_save(self, *_):
+        if self.session is None: return
+        self.capture_processing_state(); self.update_session_status(pending=True)
         self.session_timer.start(700)
 
     def save_session_now(self):
-        if self.session is None: return
-        try: save_session(self.session)
-        except OSError as exc: self.statusBar().showMessage(f"筛选进度保存失败：{exc}", 8000)
+        if self.session is None: return False
+        self.capture_processing_state()
+        try:
+            save_session(self.session)
+            if self.active_session_file: save_session_file(self.session, self.active_session_file)
+            self.update_session_status()
+            return True
+        except OSError as exc:
+            self.statusBar().showMessage(f"筛选进度保存失败：{exc}", 8000)
+            return False
 
     def set_busy(self, busy, message):
         self.progress.setRange(0, 0 if busy else 1); self.progress.setValue(0 if busy else 1); self.statusBar().showMessage(message)

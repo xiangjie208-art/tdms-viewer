@@ -4,6 +4,13 @@ All notable changes are documented here. This project follows semantic versionin
 
 ## [Unreleased]
 
+## [2.5.0] - 2026-08-11
+
+- Added a vertically stacked global/local I–T combination image to current-image and screening-result exports.
+- Added resumable processing sessions with automatic mark/note drafts, last-file/channel restoration, and analysis-setting restoration.
+- Added named session save/open controls, portable JSON session files, data-folder relocation, atomic writes, and `.bak` recovery.
+- Migrated legacy sessions to relative TDMS file identifiers so moved datasets can be rebound safely.
+
 ## [2.4.0] - 2026-08-11
 
 - Added Ctrl/Shift multi-selection for batch deletion and selected-region export.
