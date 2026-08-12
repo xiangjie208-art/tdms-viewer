@@ -11,6 +11,7 @@ from PySide6.QtCore import QItemSelectionModel
 from PySide6.QtWidgets import QApplication, QMessageBox, QTabWidget
 
 from tdms_fingerprint_viewer.main_window import MainWindow
+from tdms_fingerprint_viewer.exporting import DEFAULT_EXPORT_OPTIONS
 
 
 def test_main_window_constructs_with_original_four_panel_controls(tmp_path, monkeypatch):
@@ -156,17 +157,60 @@ def test_result_bundle_uses_new_csv_names_and_readable_snapshot_names(tmp_path, 
         lambda *args, **kwargs: str(export_parent),
     )
 
-    window._export_regions([region], selected_only=False)
+    window._export_regions(
+        [region], selected_only=False, options=DEFAULT_EXPORT_OPTIONS,
+        destination_parent=export_parent,
+    )
 
     result_folder = next(export_parent.iterdir())
-    assert (result_folder / "feature.csv").is_file()
-    assert (result_folder / "I-T_raw_data.csv").is_file()
+    assert (result_folder / "summary" / "feature.csv").is_file()
+    assert (result_folder / "summary" / "I-T_raw_data.csv").is_file()
+    assert (result_folder / "signals" / "sample_1_0.10000-0.30000s_测试.csv").is_file()
     assert not (result_folder / "file_marks.csv").exists()
     assert not (result_folder / "candidate_regions.csv").exists()
-    assert (result_folder / "snapshots" / "sample_1_0.10000-0.30000s_测试_overview.png").is_file()
-    assert (result_folder / "snapshots" / "sample_1_0.10000-0.30000s_测试_time.png").is_file()
-    assert (result_folder / "snapshots" / "sample_1_0.10000-0.30000s_测试_spectrum.png").is_file()
-    assert (result_folder / "snapshots" / "sample_1_0.10000-0.30000s_测试_combined.png").is_file()
+    assert (result_folder / "images" / "sample_1_0.10000-0.30000s_测试_overview.png").is_file()
+    assert (result_folder / "images" / "sample_1_0.10000-0.30000s_测试_time.png").is_file()
+    assert (result_folder / "images" / "sample_1_0.10000-0.30000s_测试_spectrum.png").is_file()
+    assert (result_folder / "images" / "sample_1_0.10000-0.30000s_测试_combined.png").is_file()
+    assert (result_folder / "analysis_session.json").is_file()
+    assert (result_folder / "report.html").is_file()
     window.session = None
     window.close()
     app.processEvents()
+
+
+def test_result_bundle_generates_only_selected_export_content(tmp_path, monkeypatch):
+    monkeypatch.setenv("TDMS_VIEWER_DATA_DIR", str(tmp_path / "state"))
+    app = QApplication.instance() or QApplication([])
+    data_folder = tmp_path / "data"; export_parent = tmp_path / "exports"
+    data_folder.mkdir(); export_parent.mkdir()
+    tdms_path = data_folder / "sample_2.tdms"
+    channel = ChannelObject(
+        "Current", "Dev1/ai0", np.arange(5, dtype=float),
+        properties={"wf_increment": 0.1, "unit_string": "A"},
+    )
+    with TdmsWriter(tdms_path) as writer: writer.write_segment([channel])
+    combined = tmp_path / "combined.png"; combined.write_bytes(b"combined")
+    region = {
+        "id": "region", "file": tdms_path.name, "file_name": tdms_path.name,
+        "channel": "Current/Dev1/ai0", "start_s": 0.1, "end_s": 0.3,
+        "start_index": 1, "end_index_exclusive": 4, "note": "仅组合图",
+        "combined_snapshot": str(combined),
+    }
+    window = MainWindow(); window.data_folder = data_folder
+    window.session = {"data_folder": str(data_folder), "file_marks": {}, "file_notes": {}, "regions": [region]}
+    monkeypatch.setattr(QMessageBox, "information", lambda *args, **kwargs: QMessageBox.Ok)
+    options = {key: False for key in DEFAULT_EXPORT_OPTIONS}
+    options.update({"individual_csv": True, "image_combined": True})
+
+    result_folder = window._export_regions(
+        [region], selected_only=True, options=options, destination_parent=export_parent,
+    )
+
+    assert not (result_folder / "summary").exists()
+    assert (result_folder / "signals" / "sample_2_0.10000-0.30000s_仅组合图.csv").is_file()
+    assert (result_folder / "images" / "sample_2_0.10000-0.30000s_仅组合图_combined.png").is_file()
+    assert len(list((result_folder / "images").iterdir())) == 1
+    assert not (result_folder / "analysis_session.json").exists()
+    assert not (result_folder / "report.html").exists()
+    window.session = None; window.close(); app.processEvents()

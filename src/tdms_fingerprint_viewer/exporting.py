@@ -16,6 +16,17 @@ IT_COLUMNS = [
     "file", "channel", "start_s", "end_s", "note",
     "time_s", "current", "current_unit",
 ]
+DEFAULT_EXPORT_OPTIONS = {
+    "feature_summary": True,
+    "raw_summary": True,
+    "individual_csv": True,
+    "image_overview": True,
+    "image_time": True,
+    "image_spectrum": True,
+    "image_combined": True,
+    "session_json": True,
+    "html_report": True,
+}
 _INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _RESERVED_FILENAMES = {
     "CON", "PRN", "AUX", "NUL",
@@ -123,3 +134,50 @@ def write_it_raw_csv(path: Path, regions: list[dict], data_folder: Path) -> tupl
                 ])
             row_count += end - start
     return row_count, warnings
+
+
+def write_individual_signal_csvs(
+    folder: Path, regions: list[dict], data_folder: Path,
+) -> tuple[int, int, list[str]]:
+    file_count = 0
+    row_count = 0
+    warnings = []
+    folder.mkdir(parents=True, exist_ok=True)
+    used_names = set()
+    for region in regions:
+        source = resolve_region_file(region, data_folder)
+        display_name = region.get("file_name") or Path(region.get("file", "")).name
+        if source is None:
+            warnings.append(f"找不到原始文件：{display_name}")
+            continue
+        try:
+            values, channel, _ = load_trace(source, region.get("channel") or None)
+        except Exception as exc:
+            warnings.append(f"无法读取 {display_name}：{exc}")
+            continue
+        requested_channel = region.get("channel")
+        if requested_channel and channel.key != requested_channel:
+            warnings.append(f"找不到原通道：{display_name} / {requested_channel}")
+            continue
+        start, end = region_sample_bounds(region, channel.dt, len(values))
+        basename = region_export_basename(region)
+        candidate = basename
+        number = 2
+        while candidate.casefold() in used_names or (folder / f"{candidate}.csv").exists():
+            candidate = f"{basename}_{number}"
+            number += 1
+        used_names.add(candidate.casefold())
+        path = folder / f"{candidate}.csv"
+        with path.open("w", newline="", encoding="utf-8-sig") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(IT_COLUMNS)
+            for index in range(start, end):
+                writer.writerow([
+                    display_name, channel.key,
+                    region.get("start_s", ""), region.get("end_s", ""),
+                    region.get("note", ""), index * channel.dt,
+                    float(values[index]), channel.unit,
+                ])
+        file_count += 1
+        row_count += end - start
+    return file_count, row_count, warnings
