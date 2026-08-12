@@ -11,6 +11,7 @@ from tdms_fingerprint_viewer.exporting import (
     region_export_basename,
     safe_filename_component,
     write_feature_csv,
+    write_individual_signal_csvs,
     write_it_raw_csv,
 )
 
@@ -83,3 +84,41 @@ def test_it_raw_csv_reports_missing_source_without_failing(tmp_path: Path):
     assert warnings == ["找不到原始文件：missing.tdms"]
     with output.open(encoding="utf-8-sig", newline="") as handle:
         assert next(csv.reader(handle)) == IT_COLUMNS
+
+
+def test_individual_signal_csvs_create_one_traceable_child_table_per_region(tmp_path: Path):
+    data_folder = tmp_path / "data"; data_folder.mkdir()
+    tdms_path = data_folder / "sample_1.tdms"
+    channel = ChannelObject(
+        "Current", "Dev1/ai0", np.arange(8, dtype=float),
+        properties={"wf_increment": 0.1, "unit_string": "A"},
+    )
+    with TdmsWriter(tdms_path) as writer:
+        writer.write_segment([channel])
+    regions = [
+        {
+            "file": tdms_path.name, "file_name": tdms_path.name, "channel": "Current/Dev1/ai0",
+            "start_s": 0.1, "end_s": 0.2, "start_index": 1, "end_index_exclusive": 3,
+            "note": "第一段",
+        },
+        {
+            "file": tdms_path.name, "file_name": tdms_path.name, "channel": "Current/Dev1/ai0",
+            "start_s": 0.4, "end_s": 0.6, "start_index": 4, "end_index_exclusive": 7,
+            "note": "第二段",
+        },
+    ]
+    output = tmp_path / "signals"
+
+    file_count, row_count, warnings = write_individual_signal_csvs(output, regions, data_folder)
+
+    assert file_count == 2
+    assert row_count == 5
+    assert warnings == []
+    assert sorted(path.name for path in output.glob("*.csv")) == [
+        "sample_1_0.10000-0.20000s_第一段.csv",
+        "sample_1_0.40000-0.60000s_第二段.csv",
+    ]
+    with (output / "sample_1_0.10000-0.20000s_第一段.csv").open(encoding="utf-8-sig", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    assert [float(row["current"]) for row in rows] == [1.0, 2.0]
+    assert {row["file"] for row in rows} == {"sample_1.tdms"}

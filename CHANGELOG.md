@@ -4,6 +4,13 @@ All notable changes are documented here. This project follows semantic versionin
 
 ## [Unreleased]
 
+## [2.6.0] - 2026-08-12
+
+- Added an export-content dialog for independently selecting CSV totals, per-signal CSV files, image types, session JSON, and HTML reports.
+- Added one traceable CSV child table per saved signal while retaining `feature.csv` and `I-T_raw_data.csv` summary tables.
+- Organized result bundles into `summary/`, `signals/`, and `images/`, creating only the directories selected for export.
+- Added remembered export preferences, select-all/clear-all actions, and validation that at least one output is selected.
+
 ## [2.5.0] - 2026-08-11
 
 - Added a vertically stacked global/local I–T combination image to current-image and screening-result exports.

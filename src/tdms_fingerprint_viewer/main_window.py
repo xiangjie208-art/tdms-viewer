@@ -16,7 +16,7 @@ from PySide6.QtCore import QByteArray, QObject, QRect, QRunnable, QThreadPool, Q
 from PySide6.QtGui import QColor, QFont, QKeyEvent, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QColorDialog, QComboBox, QFileDialog,
-    QDoubleSpinBox, QFormLayout, QFrame, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListWidget,
+    QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout, QFrame, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListWidget,
     QListWidgetItem, QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar,
     QPushButton, QScrollArea, QTabWidget, QTableWidget, QTableWidgetItem,
     QVBoxLayout, QWidget,
@@ -27,8 +27,8 @@ from .core import (
     dominant_peaks, load_trace, minmax_envelope, trace_statistics,
 )
 from .exporting import (
-    region_export_basename, unique_export_basename, write_feature_csv,
-    write_it_raw_csv,
+    DEFAULT_EXPORT_OPTIONS, region_export_basename, unique_export_basename,
+    write_feature_csv, write_individual_signal_csvs, write_it_raw_csv,
 )
 from .session import (
     app_data_dir, load_session, load_session_file, normalize_session,
@@ -53,6 +53,57 @@ PLOT_THEMES = {
         "spectrum": "#9B2C2C", "blank": "#69727D", "region": "#1E88E5",
     },
 }
+
+EXPORT_OPTION_GROUPS = (
+    ("图片", (
+        ("image_overview", "全局图"), ("image_time", "局部图"),
+        ("image_spectrum", "频谱图"), ("image_combined", "全局—局部组合图"),
+    )),
+    ("CSV 数据", (
+        ("feature_summary", "特征汇总总表 feature.csv"),
+        ("raw_summary", "原始 I–T 数据总表 I-T_raw_data.csv"),
+        ("individual_csv", "每条筛选信号的独立 CSV 子表"),
+    )),
+    ("会话与报告", (
+        ("session_json", "会话文件 analysis_session.json"),
+        ("html_report", "HTML 汇总报告 report.html"),
+    )),
+)
+
+
+class ExportOptionsDialog(QDialog):
+    def __init__(self, defaults, region_count, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("选择导出内容")
+        self.setMinimumWidth(470)
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel(f"将导出 {region_count} 条已保存信号。请选择需要生成的内容："))
+        self.option_checks = {}
+        for title, options in EXPORT_OPTION_GROUPS:
+            group = QGroupBox(title); group_layout = QVBoxLayout(group)
+            for key, label in options:
+                check = QCheckBox(label); check.setChecked(bool(defaults.get(key, True)))
+                self.option_checks[key] = check; group_layout.addWidget(check)
+            layout.addWidget(group)
+        choice_row = QHBoxLayout(); select_all = QPushButton("全选"); clear_all = QPushButton("取消全选")
+        select_all.clicked.connect(lambda: self.set_all_checked(True)); clear_all.clicked.connect(lambda: self.set_all_checked(False))
+        choice_row.addWidget(select_all); choice_row.addWidget(clear_all); choice_row.addStretch(1); layout.addLayout(choice_row)
+        self.remember_check = QCheckBox("记住本次导出选项"); self.remember_check.setChecked(True)
+        layout.addWidget(self.remember_check)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept); buttons.rejected.connect(self.reject); layout.addWidget(buttons)
+
+    def set_all_checked(self, checked):
+        for check in self.option_checks.values(): check.setChecked(checked)
+
+    def options(self):
+        return {key: check.isChecked() for key, check in self.option_checks.items()}
+
+    def accept(self):
+        if not any(self.options().values()):
+            QMessageBox.information(self, "选择导出内容", "请至少选择一项导出内容。")
+            return
+        super().accept()
 
 
 class WorkerSignals(QObject):
@@ -951,63 +1002,108 @@ class MainWindow(QMainWindow):
             number += 1
         return candidate
 
-    def _export_regions(self, regions, selected_only):
+    def _choose_export_options(self, region_count):
+        defaults = dict(DEFAULT_EXPORT_OPTIONS)
+        saved = self.settings.get("export_options", {})
+        if isinstance(saved, dict): defaults.update(saved)
+        dialog = ExportOptionsDialog(defaults, region_count, self)
+        if dialog.exec() != QDialog.Accepted: return None
+        options = dialog.options()
+        if dialog.remember_check.isChecked():
+            self.settings["export_options"] = options; self._save_settings()
+        return options
+
+    def _write_html_report(self, path, regions, title):
+        rows = []
+        for region in regions:
+            peaks = ", ".join(f"{f:.5g} Hz" for f, _ in region.get("peaks", [])[:5])
+            rows.append(f"<tr><td>{html.escape(region.get('file_name', ''))}</td><td>{region.get('start_s', 0):.5f}–{region.get('end_s', 0):.5f}</td><td>{html.escape(region.get('tag', ''))}</td><td>{html.escape(peaks)}</td><td>{html.escape(region.get('note', ''))}</td></tr>")
+        report = f"""<!doctype html><meta charset='utf-8'><title>TDMS 筛选结果</title>
+<style>body{{font-family:Segoe UI,Microsoft YaHei,sans-serif;margin:32px;color:#263238}}table{{border-collapse:collapse;width:100%}}th,td{{border:1px solid #ccd3d8;padding:7px;text-align:left}}th{{background:#eef2f5}}</style>
+<h1>TDMS {title}</h1><p>数据文件夹：{html.escape(str(self.data_folder))}</p><p>导出时间：{datetime.now():%Y-%m-%d %H:%M:%S}</p>
+<table><tr><th>文件</th><th>区间 (s)</th><th>标签</th><th>主要峰</th><th>备注</th></tr>{''.join(rows)}</table>"""
+        path.write_text(report, encoding="utf-8")
+
+    def _export_regions(self, regions, selected_only, options=None, destination_parent=None):
         if not self.session or not self.data_folder: return
         if not regions:
             QMessageBox.information(self, "导出筛选结果", "当前没有可导出的已保存区间。")
             return
         title = "选中信号" if selected_only else "全部筛选结果"
-        folder = QFileDialog.getExistingDirectory(self, f"选择{title}导出文件夹", str(self.data_folder))
+        if options is None:
+            options = self._choose_export_options(len(regions))
+            if options is None: return
+        options = {key: bool(options.get(key, False)) for key in DEFAULT_EXPORT_OPTIONS}
+        if not any(options.values()):
+            QMessageBox.information(self, "导出筛选结果", "请至少选择一项导出内容。")
+            return
+        folder = destination_parent or QFileDialog.getExistingDirectory(
+            self, f"选择{title}导出文件夹", str(self.data_folder)
+        )
         if not folder: return
         prefix = "TDMS选中信号" if selected_only else "TDMS筛选结果"
         out = self._unique_result_folder(Path(folder), prefix)
         out.mkdir(parents=True)
         warnings = []
+        raw_rows = child_rows = child_files = 0
         self.set_busy(True, f"正在导出{title}…")
         QApplication.processEvents()
         try:
-            write_feature_csv(out / "feature.csv", regions)
-            raw_rows, raw_warnings = write_it_raw_csv(out / "I-T_raw_data.csv", regions, Path(self.data_folder))
-            warnings.extend(raw_warnings)
-            export_state = self._export_session_state(regions, selected_only)
-            (out / "analysis_session.json").write_text(
-                json.dumps(export_state, ensure_ascii=False, indent=2), encoding="utf-8"
-            )
-            snapshot_out = out / "snapshots"; snapshot_out.mkdir()
-            for region in regions:
-                image_specs = (
-                    ("overview_snapshot", "overview", False), ("time_snapshot", "time", True),
-                    ("spectrum_snapshot", "spectrum", True), ("combined_snapshot", "combined", False),
+            if options["feature_summary"] or options["raw_summary"]:
+                summary_out = out / "summary"; summary_out.mkdir()
+                if options["feature_summary"]:
+                    write_feature_csv(summary_out / "feature.csv", regions)
+                if options["raw_summary"]:
+                    raw_rows, raw_warnings = write_it_raw_csv(
+                        summary_out / "I-T_raw_data.csv", regions, Path(self.data_folder)
+                    )
+                    warnings.extend(raw_warnings)
+            if options["individual_csv"]:
+                child_files, child_rows, child_warnings = write_individual_signal_csvs(
+                    out / "signals", regions, Path(self.data_folder)
                 )
-                basename = unique_export_basename(
-                    snapshot_out, region_export_basename(region), tuple(spec[1] for spec in image_specs)
+                warnings.extend(child_warnings)
+            requested_images = [
+                ("overview_snapshot", "overview") if options["image_overview"] else None,
+                ("time_snapshot", "time") if options["image_time"] else None,
+                ("spectrum_snapshot", "spectrum") if options["image_spectrum"] else None,
+                ("combined_snapshot", "combined") if options["image_combined"] else None,
+            ]
+            requested_images = [spec for spec in requested_images if spec]
+            if requested_images:
+                image_out = out / "images"; image_out.mkdir()
+                for region in regions:
+                    basename = unique_export_basename(
+                        image_out, region_export_basename(region), tuple(spec[1] for spec in requested_images)
+                    )
+                    for key, image_type in requested_images:
+                        source = self._snapshot_source(region, key)
+                        if source:
+                            shutil.copy2(source, image_out / f"{basename}_{image_type}.png")
+                        else:
+                            warnings.append(f"找不到快照：{region.get('file_name', '')} / {image_type}")
+            if options["session_json"]:
+                export_state = self._export_session_state(regions, selected_only)
+                (out / "analysis_session.json").write_text(
+                    json.dumps(export_state, ensure_ascii=False, indent=2), encoding="utf-8"
                 )
-                for key, image_type, required in image_specs:
-                    source = self._snapshot_source(region, key)
-                    if source:
-                        shutil.copy2(source, snapshot_out / f"{basename}_{image_type}.png")
-                    elif required:
-                        warnings.append(f"找不到快照：{region.get('file_name', '')} / {image_type}")
-            rows = []
-            for region in regions:
-                peaks = ", ".join(f"{f:.5g} Hz" for f, _ in region.get("peaks", [])[:5])
-                rows.append(f"<tr><td>{html.escape(region.get('file_name', ''))}</td><td>{region.get('start_s', 0):.5f}–{region.get('end_s', 0):.5f}</td><td>{html.escape(region.get('tag', ''))}</td><td>{html.escape(peaks)}</td><td>{html.escape(region.get('note', ''))}</td></tr>")
-            report = f"""<!doctype html><meta charset='utf-8'><title>TDMS 筛选结果</title>
-<style>body{{font-family:Segoe UI,Microsoft YaHei,sans-serif;margin:32px;color:#263238}}table{{border-collapse:collapse;width:100%}}th,td{{border:1px solid #ccd3d8;padding:7px;text-align:left}}th{{background:#eef2f5}}</style>
-<h1>TDMS {title}</h1><p>数据文件夹：{html.escape(str(self.data_folder))}</p><p>导出时间：{datetime.now():%Y-%m-%d %H:%M:%S}</p>
-<table><tr><th>文件</th><th>区间 (s)</th><th>标签</th><th>主要峰</th><th>备注</th></tr>{''.join(rows)}</table>"""
-            (out / "report.html").write_text(report, encoding="utf-8")
+            if options["html_report"]:
+                self._write_html_report(out / "report.html", regions, title)
         except Exception as exc:
             self.set_busy(False, "导出失败")
             QMessageBox.critical(self, "导出失败", f"导出过程中发生错误：\n{exc}\n\n已创建的目录：\n{out}")
             return
-        message = f"已导出 {len(regions)} 条区间、{raw_rows:,} 个 I–T 数据点：\n{out}"
+        message = f"已导出 {len(regions)} 条筛选信号：\n{out}"
+        if options["raw_summary"]: message += f"\nI–T 总表：{raw_rows:,} 个数据点"
+        if options["individual_csv"]: message += f"\nCSV 子表：{child_files} 个文件，{child_rows:,} 个数据点"
         if warnings:
+            warnings = list(dict.fromkeys(warnings))
             preview = "\n".join(f"• {warning}" for warning in warnings[:5])
             remainder = f"\n另有 {len(warnings) - 5} 条警告。" if len(warnings) > 5 else ""
             message += f"\n\n导出完成，但有以下警告：\n{preview}{remainder}"
         self.set_busy(False, f"{title}已导出：{out}")
         QMessageBox.information(self, "导出完成", message)
+        return out
 
     def move_region(self, direction, fraction=0.25):
         if self.current_values is None: return
