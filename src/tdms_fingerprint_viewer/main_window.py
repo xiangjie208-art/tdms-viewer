@@ -292,6 +292,8 @@ class MainWindow(QMainWindow):
         self.detail_stats_label.setStyleSheet("padding:4px 7px;background:#F5F7FA;color:#343A40")
         self.detail_plot = make_plot("局部波形", "记录信号", "时间 (s)")
         self.detail_curve = self.detail_plot.plot(pen=pg.mkPen("#FFFFFF", width=0.85))
+        self.detail_plot.getViewBox().sigRangeChangedManually.connect(self.on_detail_range_changed)
+        self.detail_plot.setToolTip("左右拖动或缩放可浏览相邻数据，并同步总览选区、统计量和局部频谱。")
         detail_layout.addWidget(self.detail_stats_label); detail_layout.addWidget(self.detail_plot, 1); grid.addWidget(detail_box, 1, 0)
 
         spectrum_box = QWidget(); spectrum_layout = QVBoxLayout(spectrum_box); spectrum_layout.setContentsMargins(0, 0, 0, 0)
@@ -670,6 +672,23 @@ class MainWindow(QMainWindow):
             key = self.channel_combo.currentData()
             if key and key != self.current_channel.key: self.load_current_file(self.current_path, key)
 
+    def on_detail_range_changed(self, axes):
+        if not axes[0] or self.current_values is None or self.current_channel is None:
+            return
+        dt = self.current_channel.dt
+        duration = (len(self.current_values) - 1) * dt
+        if duration <= 0:
+            return
+        start, end = self.detail_plot.getViewBox().viewRange()[0]
+        width = min(duration, max(min(duration, 16 * dt), end - start))
+        start = min(max(0.0, (start + end - width) / 2), duration - width)
+        end = start + width
+        # Only manual view changes flow back to the overview. Programmatic
+        # range updates in on_region_changed must not create a feedback loop.
+        if not np.allclose(self.region.getRegion(), (start, end), rtol=0, atol=dt * 1e-7):
+            self.region.setRegion((start, end))
+        self.detail_plot.setXRange(start, end, padding=0)
+
     def on_region_changed(self):
         if self.current_values is None or self.current_channel is None: return
         start, end = sorted(self.region.getRegion()); dt = self.current_channel.dt
@@ -678,7 +697,9 @@ class MainWindow(QMainWindow):
         self.current_indices = (i0, i1); selected = self.current_values[i0:i1]
         self.sync_time_inputs(start, end)
         x, y = minmax_envelope(selected, dt, start_index=i0, max_bins=8000); self.detail_curve.setData(x, y)
-        self.detail_plot.setXRange(i0 * dt, max(i0 * dt + dt, (i1 - 1) * dt), padding=0.015)
+        # Match the selection exactly so each drag keeps its width instead of
+        # repeatedly adding plot padding or subtracting a sample interval.
+        self.detail_plot.setXRange(start, max(start + dt, end), padding=0)
         stats = trace_statistics(selected)
         self.current_stats = stats
         resolution = 1.0 / max(dt, len(selected) * dt)
