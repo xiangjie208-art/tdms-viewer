@@ -4,6 +4,11 @@ All notable changes are documented here. This project follows semantic versionin
 
 ## [Unreleased]
 
+## [2.6.1] - 2026-09-05
+
+- Fixed local-waveform panning and horizontal zoom to reveal adjacent data and synchronize the overview selection, time controls, statistics, and local spectrum.
+- Kept local navigation within file boundaries and preserved the time-window width during repeated drags.
+
 ## [2.6.0] - 2026-08-12
 
 - Added an export-content dialog for independently selecting CSV totals, per-signal CSV files, image types, session JSON, and HTML reports.
