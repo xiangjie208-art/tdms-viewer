@@ -20,8 +20,10 @@ DEFAULT_PROCESSING = {
     "fft_scope": "局部框选区间",
     "spectrum_mode": "FFT 幅度谱",
     "window": "Hann",
-    "log_x": True,
-    "log_y": True,
+    "log_x": False,
+    "log_y": False,
+    "frequency_min_hz": 0.0,
+    "frequency_max_hz": 1000.0,
     "blank_overlay": True,
 }
 DEFAULT_SESSION = {
