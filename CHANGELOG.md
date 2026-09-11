@@ -4,6 +4,14 @@ All notable changes are documented here. This project follows semantic versionin
 
 ## [Unreleased]
 
+## [2.7.0] - 2026-09-11
+
+- Added compact icon controls for moving, time selection, vertical-axis selection, and rectangular selection in the local waveform panel.
+- Time selection spans the full plot height and changes only the time range; vertical selection spans the full plot width and changes only the vertical range.
+- Kept selection modes active for repeated selections, with translucent previews and support for reverse-direction drags.
+- Preserved mouse-wheel zoom and synchronized time selections with the overview, time inputs, statistics, and local spectrum.
+- Added real mouse-drag regression tests for selection geometry, independent axes, and repeated selections.
+
 ## [2.6.1] - 2026-09-05
 
 - Fixed local-waveform panning and horizontal zoom to reveal adjacent data and synchronize the overview selection, time controls, statistics, and local spectrum.

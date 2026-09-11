@@ -2,8 +2,8 @@ cff-version: 1.2.0
 message: "If this software supports your research, please cite the repository and archived release."
 title: "TDMS Viewer"
 type: software
-version: 2.6.1
-date-released: 2026-09-05
+version: 2.7.0
+date-released: 2026-09-11
 authors:
   - name: "TDMS Viewer contributors"
 license: MIT
