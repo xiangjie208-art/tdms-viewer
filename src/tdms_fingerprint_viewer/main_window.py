@@ -12,13 +12,13 @@ import uuid
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import QByteArray, QObject, QRect, QRunnable, QThreadPool, QTimer, Qt, Signal, Slot
-from PySide6.QtGui import QColor, QFont, QKeyEvent, QPainter, QPixmap
+from PySide6.QtCore import QByteArray, QObject, QRect, QRectF, QRunnable, QSize, QThreadPool, QTimer, Qt, Signal, Slot
+from PySide6.QtGui import QColor, QFont, QKeyEvent, QPainter, QPixmap, QIcon
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QColorDialog, QComboBox, QFileDialog,
     QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout, QFrame, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListWidget,
     QListWidgetItem, QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar,
-    QPushButton, QScrollArea, QTabWidget, QTableWidget, QTableWidgetItem,
+    QPushButton, QScrollArea, QTabWidget, QTableWidget, QTableWidgetItem, QToolButton,
     QVBoxLayout, QWidget,
 )
 
@@ -43,6 +43,75 @@ TAG_COLORS = {
     "未标记": "#AAB2BD", "候选": "#FFB300", "待复查": "#4FC3F7",
     "无明显特征": "#81C784", "噪声过大": "#FF8A65", "排除": "#EF5350",
 }
+
+
+class SelectionViewBox(pg.ViewBox):
+    """ViewBox supporting persistent pan and rectangle selection modes."""
+
+    selectionFinished = Signal(object)
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.interaction_mode = "pan"
+
+    def set_interaction_mode(self, mode):
+        self.interaction_mode = mode
+        self.setMouseMode(self.RectMode if mode != "pan" else self.PanMode)
+        self.rbScaleBox.hide()
+        self.setCursor(Qt.CursorShape.OpenHandCursor if mode == "pan" else Qt.CursorShape.CrossCursor)
+
+    def mouseDragEvent(self, event, axis=None):
+        selecting = self.interaction_mode != "pan" and axis is None and event.button() == Qt.MouseButton.LeftButton
+        if not selecting:
+            return super().mouseDragEvent(event, axis=axis)
+        event.accept()
+        rect = self.childGroup.mapRectFromParent(
+            QRectF(event.buttonDownPos(event.button()), event.pos())
+        ).normalized()
+        visible = self.viewRect()
+        rect.setLeft(max(visible.left(), min(visible.right(), rect.left())))
+        rect.setRight(max(visible.left(), min(visible.right(), rect.right())))
+        rect.setTop(max(visible.top(), min(visible.bottom(), rect.top())))
+        rect.setBottom(max(visible.top(), min(visible.bottom(), rect.bottom())))
+        if self.interaction_mode == "time":
+            rect.setTop(visible.top())
+            rect.setBottom(visible.bottom())
+        elif self.interaction_mode == "y":
+            rect.setLeft(visible.left())
+            rect.setRight(visible.right())
+        if event.isFinish():
+            self.rbScaleBox.hide()
+            if rect.width() > 0 and rect.height() > 0:
+                self.selectionFinished.emit((
+                    self.interaction_mode, rect.left(), rect.right(), rect.top(), rect.bottom(),
+                ))
+        else:
+            self.updateScaleBox(
+                self.childGroup.mapToParent(rect.topLeft()), self.childGroup.mapToParent(rect.bottomRight()),
+            )
+        # Do not call RectMode's default handler: it would zoom both axes.
+
+
+def mode_icon(mode, color="#65717D"):
+    pixmap = QPixmap(24, 24); pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap); painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    pen = pg.mkPen(color, width=1.7); painter.setPen(pen); painter.setBrush(Qt.BrushStyle.NoBrush)
+    if mode == "pan":
+        painter.drawRoundedRect(9, 8, 7, 11, 3, 3)
+        painter.drawLine(9, 12, 5, 10); painter.drawLine(7, 10, 5, 6)
+        painter.drawLine(11, 8, 11, 4); painter.drawLine(14, 8, 14, 3)
+        painter.drawLine(17, 9, 18, 5)
+    elif mode == "time":
+        painter.drawLine(4, 4, 20, 4); painter.drawLine(4, 20, 20, 20)
+        painter.drawLine(4, 4, 4, 20); painter.drawLine(20, 4, 20, 20)
+        painter.drawLine(7, 4, 7, 20); painter.drawLine(17, 4, 17, 20)
+    elif mode == "y":
+        painter.drawLine(4, 4, 20, 4); painter.drawLine(4, 20, 20, 20)
+        painter.drawLine(4, 4, 4, 20); painter.drawLine(20, 4, 20, 20)
+        painter.drawLine(4, 7, 20, 7); painter.drawLine(4, 17, 20, 17)
+    else:
+        painter.drawRect(4, 4, 16, 16)
+    painter.end(); return QIcon(pixmap)
 PLOT_THEMES = {
     "深色高对比（推荐）": {
         "background": "#05070A", "foreground": "#F4F7FA", "time": "#FFFFFF",
@@ -192,8 +261,8 @@ class BlankWorker(QRunnable):
             safe_emit(self.signals.error, traceback.format_exc())
 
 
-def make_plot(title, left_label, bottom_label):
-    plot = pg.PlotWidget(background="white")
+def make_plot(title, left_label, bottom_label, view_box=None):
+    plot = pg.PlotWidget(background="white", viewBox=view_box)
     plot.setTitle(title, color="#20252B", size="11pt")
     plot.setLabel("bottom", bottom_label, color="#343A40")
     plot.setLabel("left", left_label, color="#343A40")
@@ -290,11 +359,21 @@ class MainWindow(QMainWindow):
         detail_box = QWidget(); detail_layout = QVBoxLayout(detail_box); detail_layout.setContentsMargins(0, 0, 0, 0)
         self.detail_stats_label = QLabel("局部区间：尚未载入数据"); self.detail_stats_label.setWordWrap(True)
         self.detail_stats_label.setStyleSheet("padding:4px 7px;background:#F5F7FA;color:#343A40")
-        self.detail_plot = make_plot("局部波形", "记录信号", "时间 (s)")
+        self.detail_view_box = SelectionViewBox()
+        self.detail_plot = make_plot("局部波形", "记录信号", "时间 (s)", self.detail_view_box)
         self.detail_curve = self.detail_plot.plot(pen=pg.mkPen("#FFFFFF", width=0.85))
-        self.detail_plot.getViewBox().sigRangeChangedManually.connect(self.on_detail_range_changed)
+        self.detail_view_box.sigRangeChangedManually.connect(self.on_detail_range_changed)
+        self.detail_view_box.selectionFinished.connect(self.on_detail_selection_finished)
         self.detail_plot.setToolTip("左右拖动或缩放可浏览相邻数据，并同步总览选区、统计量和局部频谱。")
-        detail_layout.addWidget(self.detail_stats_label); detail_layout.addWidget(self.detail_plot, 1); grid.addWidget(detail_box, 1, 0)
+        detail_header = QHBoxLayout(); detail_header.addWidget(self.detail_stats_label, 1)
+        self.detail_mode_buttons = {}
+        for mode, tooltip in (("pan", "移动数据"), ("time", "框选时间范围"), ("y", "框选纵轴范围"), ("xy", "框选时间和纵轴范围")):
+            button = QToolButton(); button.setCheckable(True); button.setAutoExclusive(True); button.setIcon(mode_icon(mode))
+            button.setIconSize(QSize(22, 22)); button.setToolTip(tooltip); button.setAccessibleName(tooltip)
+            button.setProperty("mode", mode); button.clicked.connect(lambda _=False, value=mode: self.set_detail_mode(value))
+            self.detail_mode_buttons[mode] = button; detail_header.addWidget(button)
+        self.set_detail_mode("pan")
+        detail_layout.addLayout(detail_header); detail_layout.addWidget(self.detail_plot, 1); grid.addWidget(detail_box, 1, 0)
 
         spectrum_box = QWidget(); spectrum_layout = QVBoxLayout(spectrum_box); spectrum_layout.setContentsMargins(0, 0, 0, 0)
         self.spectrum_info_label = QLabel("频谱：等待选择数据")
@@ -671,6 +750,35 @@ class MainWindow(QMainWindow):
         if index >= 0 and self.current_path and self.current_channel:
             key = self.channel_combo.currentData()
             if key and key != self.current_channel.key: self.load_current_file(self.current_path, key)
+
+    def set_detail_mode(self, mode):
+        self.detail_view_box.set_interaction_mode(mode)
+        for name, button in self.detail_mode_buttons.items():
+            button.blockSignals(True); button.setChecked(name == mode); button.blockSignals(False)
+            button.setStyleSheet(
+                "QToolButton { border: 1px solid transparent; border-radius: 4px; padding: 2px; }"
+                "QToolButton:checked { background: #DCEBFA; border-color: #4A90E2; }"
+            )
+
+    def on_detail_selection_finished(self, selection):
+        if self.current_values is None or self.current_channel is None:
+            return
+        mode, left, right, top, bottom = selection
+        current_y = self.detail_view_box.viewRange()[1]
+        if mode in ("time", "xy"):
+            duration = max(0.0, (len(self.current_values) - 1) * self.current_channel.dt)
+            if duration <= 0:
+                return
+            start, end = sorted((float(left), float(right)))
+            width = min(duration, max(16 * self.current_channel.dt, end - start))
+            start = min(max(0.0, (start + end - width) / 2), duration - width)
+            # Freeze the untouched axis before replacing the curve's data;
+            # otherwise automatic Y scaling can change a time-only selection.
+            if mode == "time":
+                self.detail_plot.setYRange(*current_y, padding=0)
+            self.region.setRegion((start, start + width))
+        if mode in ("y", "xy") and bottom > top:
+            self.detail_plot.setYRange(float(top), float(bottom), padding=0)
 
     def on_detail_range_changed(self, axes):
         if not axes[0] or self.current_values is None or self.current_channel is None:
