@@ -30,6 +30,7 @@ from .exporting import (
     DEFAULT_EXPORT_OPTIONS, region_export_basename, unique_export_basename,
     write_feature_csv, write_individual_signal_csvs, write_it_raw_csv,
 )
+from .plot_export import figure_pixmap
 from .session import (
     app_data_dir, load_session, load_session_file, normalize_session,
     save_session, save_session_file, snapshots_dir,
@@ -49,6 +50,7 @@ class SelectionViewBox(pg.ViewBox):
     """Left-button axis selections with right-button panning."""
 
     selectionFinished = Signal(object)
+    zoomedOut = Signal(object)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -59,6 +61,13 @@ class SelectionViewBox(pg.ViewBox):
         self.setMouseMode(self.RectMode)
         self.rbScaleBox.hide()
         self.setCursor(Qt.CursorShape.CrossCursor)
+
+    def wheelEvent(self, event, axis=None):
+        previous = self.viewRange()
+        outward = event.delta() * self.state["wheelScaleFactor"] > 0
+        super().wheelEvent(event, axis=axis)
+        if outward and axis is None and self.state["mouseEnabled"][1]:
+            self.zoomedOut.emit(previous)
 
     def mouseDragEvent(self, event, axis=None):
         if event.button() == Qt.MouseButton.RightButton:
@@ -413,7 +422,8 @@ class MainWindow(QMainWindow):
         self.detail_curve = self.detail_plot.plot(pen=pg.mkPen("#FFFFFF", width=0.85))
         self.detail_view_box.sigRangeChangedManually.connect(self.on_detail_range_changed)
         self.detail_view_box.selectionFinished.connect(self.on_detail_selection_finished)
-        self.detail_plot.setToolTip("左键框选；按住右键拖动浏览数据；滚轮缩放。右键拖动后保留当前框选模式。")
+        self.detail_view_box.zoomedOut.connect(self.limit_detail_zoom_out)
+        self.detail_plot.setToolTip("左键框选；按住右键拖动浏览数据；滚轮缩放。向外缩小时纵轴最多保留可见数据上下各 20% 留白，横轴继续缩放。")
         detail_header = QHBoxLayout(); detail_header.addWidget(self.detail_stats_label, 1)
         self.detail_mode_buttons = {}
         for mode, tooltip in (("time", "框选时间范围"), ("y", "框选纵轴范围"), ("xy", "框选时间和纵轴范围")):
@@ -862,6 +872,43 @@ class MainWindow(QMainWindow):
         if mode in ("y", "xy") and bottom > top:
             self.detail_plot.setYRange(float(top), float(bottom), padding=0)
 
+    def detail_amplitude_bounds(self, time_range):
+        if self.current_values is None or self.current_channel is None:
+            return None
+        dt = self.current_channel.dt
+        start, end = time_range
+        first = max(0, int(np.floor(start / dt)))
+        last = min(len(self.current_values), int(np.floor(end / dt)) + 1)
+        values = self.current_values[first:last]
+        values = values[np.isfinite(values)]
+        if not len(values):
+            return None
+        low, high = float(values.min()), float(values.max())
+        span = high - low
+        # Flat traces still need a finite, useful display range, including zero signals.
+        if span == 0:
+            span = max(abs(low) * 0.01, 1e-12)
+        return low - span * 0.2, high + span * 0.2
+
+    def limit_detail_zoom_out(self, previous):
+        view = self.detail_view_box
+        bounds = self.detail_amplitude_bounds(view.viewRange()[0])
+        if bounds is None:
+            return
+        low, high = bounds
+        old_bounds = self.detail_amplitude_bounds(previous[0])
+        old_width = previous[1][1] - previous[1][0]
+        was_fitted = old_bounds is not None and old_width >= (old_bounds[1] - old_bounds[0]) * (1 - 1e-9)
+        bottom, top = view.viewRange()[1]
+        width = top - bottom
+        if was_fitted or width >= high - low:
+            bottom, top = low, high
+        else:
+            # Keep gradual zoom-out for an intentionally magnified vertical selection.
+            bottom = min(max(bottom, low), high - width)
+            top = bottom + width
+        view.setYRange(bottom, top, padding=0)
+
     def on_detail_range_changed(self, axes):
         if not axes[0] or self.current_values is None or self.current_channel is None:
             return
@@ -1053,8 +1100,8 @@ class MainWindow(QMainWindow):
             "spectrum_snapshot": str(spectrum_path), "combined_snapshot": str(combined_path),
             "created_at": datetime.now().isoformat(timespec="seconds"),
         }
-        self.overview_plot.grab().save(str(overview_path), "PNG")
-        self.detail_plot.grab().save(str(detail_path), "PNG"); self.spectrum_plot.grab().save(str(spectrum_path), "PNG")
+        self.export_plot_pixmap("overview").save(str(overview_path), "PNG")
+        self.export_plot_pixmap("time").save(str(detail_path), "PNG"); self.export_plot_pixmap("spectrum").save(str(spectrum_path), "PNG")
         self.combined_plot_pixmap(record).save(str(combined_path), "PNG")
         self.session.setdefault("regions", []).append(record)
         self.save_session_now(); self.refresh_region_table()
@@ -1114,6 +1161,18 @@ class MainWindow(QMainWindow):
             for index, value in enumerate(values, i0): writer.writerow([index * self.current_channel.dt, value])
         self.statusBar().showMessage(f"已导出 {len(values):,} 点：{path}", 6000)
 
+    def export_plot_pixmap(self, kind):
+        if kind == "spectrum":
+            unit = self.last_spectrum.get("y_unit", "") if self.last_spectrum else ""
+            label = "PSD" if "Welch" in self.spectrum_mode_combo.currentText() else "Amplitude"
+            return figure_pixmap(self.spectrum_plot, xlabel="Frequency (Hz)",
+                                 ylabel=f"{label} ({unit})" if unit else label,
+                                 log_x=self.log_x_check.isChecked(), log_y=self.log_y_check.isChecked())
+        unit = getattr(self.current_channel, "unit", "")
+        label = "Current" if unit in ("A", "mA", "uA", "µA", "μA", "nA", "pA") else "Signal"
+        return figure_pixmap(self.overview_plot if kind == "overview" else self.detail_plot,
+                             xlabel="Time (s)", ylabel=f"{label} ({unit})" if unit else label)
+
     def combined_plot_pixmap(self, region=None):
         if region is None:
             i0, i1 = self.current_indices
@@ -1124,15 +1183,15 @@ class MainWindow(QMainWindow):
                 "end_s": (i1 - 1) * self.current_channel.dt if self.current_channel and i1 else 0.0,
                 "note": self.note_edit.toPlainText().strip(),
             }
-        overview = self.overview_plot.grab(); detail = self.detail_plot.grab()
+        overview = self.export_plot_pixmap("overview"); detail = self.export_plot_pixmap("time")
         target_width = max(900, overview.width(), detail.width())
         content_width = target_width - 48
         overview = overview.scaledToWidth(content_width, Qt.SmoothTransformation)
         detail = detail.scaledToWidth(content_width, Qt.SmoothTransformation)
         title_height, panel_height, gap, padding = 82, 34, 18, 24
         total_height = title_height + panel_height + overview.height() + gap + panel_height + detail.height() + padding
-        canvas = QPixmap(target_width, total_height); canvas.fill(QColor(self.plot_theme["background"]))
-        painter = QPainter(canvas); foreground = QColor(self.plot_theme["foreground"]); accent = QColor(self.plot_theme["region"])
+        canvas = QPixmap(target_width, total_height); canvas.fill(QColor("white"))
+        painter = QPainter(canvas); foreground = QColor("black"); accent = QColor("black")
         painter.setPen(foreground); painter.setFont(QFont("Microsoft YaHei UI", 16, QFont.DemiBold))
         painter.drawText(QRect(padding, 8, content_width, 30), Qt.AlignCenter, "I–T 信号全局—局部组合图")
         metadata = (
@@ -1180,9 +1239,9 @@ class MainWindow(QMainWindow):
         basename = unique_export_basename(
             output, region_export_basename(export_region), ("overview", "time", "spectrum", "combined")
         )
-        self.overview_plot.grab().save(str(output / f"{basename}_overview.png"), "PNG")
-        self.detail_plot.grab().save(str(output / f"{basename}_time.png"), "PNG")
-        self.spectrum_plot.grab().save(str(output / f"{basename}_spectrum.png"), "PNG")
+        self.export_plot_pixmap("overview").save(str(output / f"{basename}_overview.png"), "PNG")
+        self.export_plot_pixmap("time").save(str(output / f"{basename}_time.png"), "PNG")
+        self.export_plot_pixmap("spectrum").save(str(output / f"{basename}_spectrum.png"), "PNG")
         self.combined_plot_pixmap(export_region).save(str(output / f"{basename}_combined.png"), "PNG")
         self.statusBar().showMessage(f"当前图像及组合图已导出到 {output}", 6000)
 

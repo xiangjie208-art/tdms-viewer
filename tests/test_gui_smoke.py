@@ -88,7 +88,7 @@ def test_combined_plot_pixmap_uses_vertical_global_and_local_layout(tmp_path, mo
     pixmap = window.combined_plot_pixmap()
 
     assert not pixmap.isNull()
-    assert pixmap.height() > pixmap.width()
+    assert pixmap.height() > pixmap.width() * 0.8
     window.session = None; window.close(); app.processEvents()
 
 

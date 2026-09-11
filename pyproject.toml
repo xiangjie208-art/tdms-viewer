@@ -27,6 +27,7 @@ dependencies = [
   "nptdms>=1.8",
   "PySide6>=6.6",
   "pyqtgraph>=0.13",
+  "matplotlib>=3.8",
 ]
 
 [project.optional-dependencies]

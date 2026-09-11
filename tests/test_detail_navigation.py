@@ -5,7 +5,7 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QPoint, QPointF, QEvent, Qt
-from PySide6.QtGui import QMouseEvent
+from PySide6.QtGui import QMouseEvent, QWheelEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
@@ -61,6 +61,63 @@ def test_detail_pan_reveals_adjacent_samples_and_updates_analysis(trace_window):
     view.sigRangeChangedManually.emit([True, False])
     assert window.region.getRegion() == pytest.approx((3.0, 4.0))
     assert view.viewRange()[0] == pytest.approx([3.0, 4.0])
+
+
+def wheel_detail(window, delta):
+    window.show()
+    QApplication.processEvents()
+    plot = window.detail_plot
+    pos = plot.mapFromScene(plot.getViewBox().sceneBoundingRect().center())
+    event = QWheelEvent(QPointF(pos), QPointF(plot.viewport().mapToGlobal(pos)),
+                        QPoint(), QPoint(0, delta), Qt.NoButton, Qt.NoModifier,
+                        Qt.ScrollPhase.NoScrollPhase, False)
+    QApplication.sendEvent(plot.viewport(), event)
+
+
+def test_wheel_out_caps_y_but_keeps_expanding_time(trace_window):
+    window = trace_window
+    window.current_values = np.sin(np.arange(1001) * np.pi / 2)
+    window.on_region_changed()
+    window.detail_plot.setYRange(-1.4, 1.4, padding=0)
+    for _ in range(4):
+        before = window.detail_view_box.viewRange()[0]
+        wheel_detail(window, -120)
+        after = window.detail_view_box.viewRange()
+        assert after[0][1] - after[0][0] > before[1] - before[0]
+        assert after[1] == pytest.approx([-1.4, 1.4])
+    wheel_detail(window, 120)
+    assert np.diff(window.detail_view_box.viewRange()[1])[0] < 2.8
+
+
+def test_wheel_out_reveals_new_peak_after_y_limit(trace_window):
+    window = trace_window
+    window.current_values = np.sin(np.arange(1001) * np.pi / 2)
+    window.current_values[310] = 10
+    window.on_region_changed()
+    window.detail_plot.setYRange(-1.4, 1.4, padding=0)
+    wheel_detail(window, -120)
+    assert window.detail_view_box.viewRange()[0][1] > 3.1
+    assert window.detail_view_box.viewRange()[1] == pytest.approx([-3.2, 12.2])
+
+
+@pytest.mark.parametrize("value", [0., -2., float("nan")])
+def test_wheel_out_handles_flat_and_nonfinite_data(trace_window, value):
+    window = trace_window
+    window.current_values[:] = value
+    window.detail_plot.setYRange(-1, 1, padding=0)
+    wheel_detail(window, -120)
+    low, high = window.detail_view_box.viewRange()[1]
+    assert np.isfinite(low) and np.isfinite(high) and high > low
+
+
+def test_vertical_selection_can_zoom_out_gradually(trace_window):
+    window = trace_window
+    window.current_values = np.sin(np.arange(1001) * np.pi / 2)
+    window.on_region_changed()
+    window.on_detail_selection_finished(("y", 2, 3, -0.1, 0.1))
+    wheel_detail(window, -120)
+    width = np.diff(window.detail_view_box.viewRange()[1])[0]
+    assert 0.2 < width < 2.8
 
 
 @pytest.mark.parametrize("shift, expected", [(-20.0, (0.0, 1.0)), (20.0, (9.0, 10.0))])

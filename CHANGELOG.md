@@ -4,6 +4,11 @@ All notable changes are documented here. This project follows semantic versionin
 
 ## [Unreleased]
 
+## [2.9.0] - 2026-09-12
+
+- Limited local-waveform wheel zoom-out to visible data extrema with 20% vertical margins, while allowing continued time zoom-out and newly visible peaks; preserved zoom-in and manual axis selections.
+- Replaced screen captures for new plot exports and region snapshots with fixed-size white scientific figures, thin black curves, inward ticks, boxed axes, and English axis labels with actual units. Combined figures use the same white style.
+
 ## [2.8.0] - 2026-09-11
 
 - Added a background-grid toggle and adjustable curve width (0.2–5 pt) to display settings, applied across all plots and remembered across restarts.
