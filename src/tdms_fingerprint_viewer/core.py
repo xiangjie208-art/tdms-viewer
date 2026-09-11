@@ -156,18 +156,21 @@ def compute_spectrum(values: np.ndarray, dt: float, mode: str, window_name: str)
     return frequency, amplitude, "V"
 
 
-def display_spectrum(frequency: np.ndarray, values: np.ndarray, max_bins: int = 10000):
-    mask = (frequency > 0) & np.isfinite(values) & (values > 0)
+def display_spectrum(frequency: np.ndarray, values: np.ndarray, max_bins: int = 10000, *, log_x=True, log_y=True):
+    mask = np.isfinite(frequency) & np.isfinite(values) & (frequency >= 0)
+    if log_x: mask &= frequency > 0
+    if log_y: mask &= values > 0
     f, y = frequency[mask], values[mask]
     if len(f) <= max_bins:
         return f, y
-    edges = np.geomspace(f[0], f[-1], max_bins + 1)
+    edges = (np.geomspace if log_x else np.linspace)(f[0], f[-1], max_bins + 1)
     indices = np.searchsorted(edges, f, side="right") - 1
+    indices = np.minimum(indices, max_bins - 1)
     valid = (indices >= 0) & (indices < max_bins)
     peaks = np.full(max_bins, -np.inf)
     np.maximum.at(peaks, indices[valid], y[valid])
-    centers = np.sqrt(edges[:-1] * edges[1:])
-    keep = np.isfinite(peaks) & (peaks > 0)
+    centers = np.sqrt(edges[:-1] * edges[1:]) if log_x else (edges[:-1] + edges[1:]) / 2
+    keep = np.isfinite(peaks)
     return centers[keep], peaks[keep]
 
 

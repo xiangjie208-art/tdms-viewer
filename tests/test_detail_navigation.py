@@ -108,30 +108,43 @@ def test_detail_zoom_limits_keep_analyzable_data_inside_file(trace_window, reque
     assert window.current_indices[1] - window.current_indices[0] >= 16
 
 
-def test_detail_mouse_drag_reveals_data_beyond_original_selection(trace_window):
+@pytest.mark.parametrize("mode", ["time", "y", "xy"])
+@pytest.mark.parametrize("direction", [-1, 1])
+def test_detail_right_drag_pans_without_changing_selection_mode(trace_window, mode, direction):
     window = trace_window
     window.show()
     QApplication.processEvents()
     plot = window.detail_plot
     view = plot.getViewBox()
+    window.detail_mode_buttons[mode].click()
+    view.setYRange(100.0, 400.0, padding=0)
+    QTest.qWait(60)
     viewport = plot.viewport()
     start = plot.mapFromScene(view.sceneBoundingRect().center())
-    QTest.mousePress(viewport, Qt.LeftButton, Qt.NoModifier, start)
+    QTest.mousePress(viewport, Qt.RightButton, Qt.NoModifier, start)
     for offset in (20, 40, 60):
-        position = start - QPoint(offset, 0)
+        QTest.qWait(20)
+        position = start + QPoint(direction * offset, offset // 3)
         event = QMouseEvent(
             QEvent.MouseMove, QPointF(position), QPointF(viewport.mapToGlobal(position)),
-            Qt.NoButton, Qt.LeftButton, Qt.NoModifier,
+            Qt.NoButton, Qt.RightButton, Qt.NoModifier,
         )
         QApplication.sendEvent(viewport, event)
-    QTest.mouseRelease(viewport, Qt.LeftButton, Qt.NoModifier, position)
+    QTest.mouseRelease(viewport, Qt.RightButton, Qt.NoModifier, position)
 
     region_start, region_end = window.region.getRegion()
-    assert region_start > 2.0
+    assert (region_start > 2.0) if direction < 0 else (region_start < 2.0)
     assert region_end - region_start == pytest.approx(1.0)
     x, _ = window.detail_curve.getData()
-    assert x[-1] > 3.0
+    assert (x[-1] > 3.0) if direction < 0 else (x[0] < 2.0)
     assert view.viewRange()[0] == pytest.approx([region_start, region_end])
+    y_low, y_high = view.viewRange()[1]
+    assert y_high - y_low == pytest.approx(300.0)
+    assert view.interaction_mode == mode
+    assert not view.rbScaleBox.isVisible()
+    assert not view.menu.isVisible()
+    # Left drag still selects immediately after releasing the right button.
+    drag_selection(window, mode, (0.2, 0.2), (0.8, 0.8))
 
 
 def test_detail_pan_fft_uses_newly_visible_signal(trace_window):
@@ -151,8 +164,8 @@ def test_detail_pan_fft_uses_newly_visible_signal(trace_window):
 
 def test_detail_mode_buttons_persist_and_apply_axis_selection(trace_window):
     window = trace_window
-    assert set(window.detail_mode_buttons) == {"pan", "time", "y", "xy"}
-    assert window.detail_mode_buttons["pan"].isChecked()
+    assert set(window.detail_mode_buttons) == {"time", "y", "xy"}
+    assert window.detail_mode_buttons["time"].isChecked()
 
     window.set_detail_mode("time")
     assert window.detail_view_box.interaction_mode == "time"

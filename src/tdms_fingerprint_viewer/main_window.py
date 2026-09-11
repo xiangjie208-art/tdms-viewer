@@ -46,22 +46,35 @@ TAG_COLORS = {
 
 
 class SelectionViewBox(pg.ViewBox):
-    """ViewBox supporting persistent pan and rectangle selection modes."""
+    """Left-button axis selections with right-button panning."""
 
     selectionFinished = Signal(object)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.interaction_mode = "pan"
+        self.set_interaction_mode("time")
 
     def set_interaction_mode(self, mode):
         self.interaction_mode = mode
-        self.setMouseMode(self.RectMode if mode != "pan" else self.PanMode)
+        self.setMouseMode(self.RectMode)
         self.rbScaleBox.hide()
-        self.setCursor(Qt.CursorShape.OpenHandCursor if mode == "pan" else Qt.CursorShape.CrossCursor)
+        self.setCursor(Qt.CursorShape.CrossCursor)
 
     def mouseDragEvent(self, event, axis=None):
-        selecting = self.interaction_mode != "pan" and axis is None and event.button() == Qt.MouseButton.LeftButton
+        if event.button() == Qt.MouseButton.RightButton:
+            event.accept()
+            self.rbScaleBox.hide()
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            delta = self.mapToView(event.lastPos()) - self.mapToView(event.pos())
+            axes = list(self.state["mouseEnabled"])
+            if axis is not None:
+                axes[1 - axis] = False
+            self.translateBy(x=delta.x() if axes[0] else None, y=delta.y() if axes[1] else None)
+            self.sigRangeChangedManually.emit(axes)
+            if event.isFinish():
+                self.setCursor(Qt.CursorShape.CrossCursor)
+            return
+        selecting = axis is None and event.button() == Qt.MouseButton.LeftButton
         if not selecting:
             return super().mouseDragEvent(event, axis=axis)
         event.accept()
@@ -96,12 +109,7 @@ def mode_icon(mode, color="#65717D"):
     pixmap = QPixmap(24, 24); pixmap.fill(Qt.GlobalColor.transparent)
     painter = QPainter(pixmap); painter.setRenderHint(QPainter.RenderHint.Antialiasing)
     pen = pg.mkPen(color, width=1.7); painter.setPen(pen); painter.setBrush(Qt.BrushStyle.NoBrush)
-    if mode == "pan":
-        painter.drawRoundedRect(9, 8, 7, 11, 3, 3)
-        painter.drawLine(9, 12, 5, 10); painter.drawLine(7, 10, 5, 6)
-        painter.drawLine(11, 8, 11, 4); painter.drawLine(14, 8, 14, 3)
-        painter.drawLine(17, 9, 18, 5)
-    elif mode == "time":
+    if mode == "time":
         painter.drawLine(4, 4, 20, 4); painter.drawLine(4, 20, 20, 20)
         painter.drawLine(4, 4, 4, 20); painter.drawLine(20, 4, 20, 20)
         painter.drawLine(7, 4, 7, 20); painter.drawLine(17, 4, 17, 20)
@@ -138,6 +146,46 @@ EXPORT_OPTION_GROUPS = (
         ("html_report", "HTML 汇总报告 report.html"),
     )),
 )
+
+
+class FrequencyRangeDialog(QDialog):
+    def __init__(self, minimum, maximum, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("频率显示范围")
+        self.setMinimumWidth(340)
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("仅调整频谱显示范围，保留完整计算结果。"))
+        form = QFormLayout()
+        self.minimum_spin = QDoubleSpinBox()
+        self.maximum_spin = QDoubleSpinBox()
+        for spin, value in ((self.minimum_spin, minimum), (self.maximum_spin, maximum)):
+            spin.setDecimals(3); spin.setRange(0, 1e12); spin.setSuffix(" Hz"); spin.setValue(value)
+        form.addRow("起始频率", self.minimum_spin)
+        form.addRow("终止频率", self.maximum_spin)
+        layout.addLayout(form)
+        note = QLabel("对数频率坐标不显示 0 Hz。")
+        layout.addWidget(note)
+        self.reset_button = QPushButton("恢复 0–1000 Hz")
+        self.reset_button.clicked.connect(self.reset_range)
+        layout.addWidget(self.reset_button)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.button(QDialogButtonBox.Ok).setText("确定")
+        buttons.button(QDialogButtonBox.Cancel).setText("取消")
+        buttons.accepted.connect(self.accept); buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def reset_range(self):
+        self.minimum_spin.setValue(0); self.maximum_spin.setValue(1000)
+
+    def frequency_range(self):
+        return self.minimum_spin.value(), self.maximum_spin.value()
+
+    def accept(self):
+        minimum, maximum = self.frequency_range()
+        if minimum >= maximum:
+            QMessageBox.warning(self, "频率范围无效", "终止频率必须大于起始频率。")
+            return
+        super().accept()
 
 
 class ExportOptionsDialog(QDialog):
@@ -290,6 +338,7 @@ class MainWindow(QMainWindow):
         self.current_stats = {}
         self.current_indices = (0, 0)
         self.last_spectrum = None
+        self.frequency_min_hz, self.frequency_max_hz = 0.0, 1000.0
         self.blank_reference = None
         self.cache = OrderedDict()
         self.load_token = self.spectrum_token = self.blank_token = 0
@@ -364,22 +413,28 @@ class MainWindow(QMainWindow):
         self.detail_curve = self.detail_plot.plot(pen=pg.mkPen("#FFFFFF", width=0.85))
         self.detail_view_box.sigRangeChangedManually.connect(self.on_detail_range_changed)
         self.detail_view_box.selectionFinished.connect(self.on_detail_selection_finished)
-        self.detail_plot.setToolTip("左右拖动或缩放可浏览相邻数据，并同步总览选区、统计量和局部频谱。")
+        self.detail_plot.setToolTip("左键框选；按住右键拖动浏览数据；滚轮缩放。右键拖动后保留当前框选模式。")
         detail_header = QHBoxLayout(); detail_header.addWidget(self.detail_stats_label, 1)
         self.detail_mode_buttons = {}
-        for mode, tooltip in (("pan", "移动数据"), ("time", "框选时间范围"), ("y", "框选纵轴范围"), ("xy", "框选时间和纵轴范围")):
+        for mode, tooltip in (("time", "框选时间范围"), ("y", "框选纵轴范围"), ("xy", "框选时间和纵轴范围")):
             button = QToolButton(); button.setCheckable(True); button.setAutoExclusive(True); button.setIcon(mode_icon(mode))
             button.setIconSize(QSize(22, 22)); button.setToolTip(tooltip); button.setAccessibleName(tooltip)
             button.setProperty("mode", mode); button.clicked.connect(lambda _=False, value=mode: self.set_detail_mode(value))
             self.detail_mode_buttons[mode] = button; detail_header.addWidget(button)
-        self.set_detail_mode("pan")
+        self.set_detail_mode("time")
         detail_layout.addLayout(detail_header); detail_layout.addWidget(self.detail_plot, 1); grid.addWidget(detail_box, 1, 0)
 
         spectrum_box = QWidget(); spectrum_layout = QVBoxLayout(spectrum_box); spectrum_layout.setContentsMargins(0, 0, 0, 0)
         self.spectrum_info_label = QLabel("频谱：等待选择数据")
         self.spectrum_info_label.setStyleSheet("padding:4px 7px;background:#F5F7FA;color:#343A40")
         self.spectrum_plot = make_plot("傅里叶变换 / 功率谱", "幅值", "频率 (Hz)")
-        spectrum_layout.addWidget(self.spectrum_info_label); spectrum_layout.addWidget(self.spectrum_plot, 1); grid.addWidget(spectrum_box, 1, 1)
+        spectrum_header = QHBoxLayout()
+        self.spectrum_info_label.setWordWrap(True)
+        spectrum_header.addWidget(self.spectrum_info_label, 1)
+        self.frequency_range_button = QPushButton("频率范围…")
+        self.frequency_range_button.clicked.connect(self.edit_frequency_range)
+        spectrum_header.addWidget(self.frequency_range_button)
+        spectrum_layout.addLayout(spectrum_header); spectrum_layout.addWidget(self.spectrum_plot, 1); grid.addWidget(spectrum_box, 1, 1)
 
         self.progress = QProgressBar(); self.progress.setRange(0, 1); self.progress.setValue(1); self.progress.setTextVisible(False)
         self.statusBar().addPermanentWidget(self.progress, 0); self.statusBar().showMessage("请选择 TDMS 数据文件夹")
@@ -440,8 +495,8 @@ class MainWindow(QMainWindow):
         self.window_combo = QComboBox(); self.window_combo.addItems(["Hann", "Hamming", "Blackman", "矩形窗"])
         self.window_combo.currentIndexChanged.connect(self.on_spectrum_setting_changed); settings_form.addRow("窗函数", self.window_combo)
         self.window_combo.currentIndexChanged.connect(self.schedule_session_save)
-        self.log_x_check = QCheckBox("频率对数坐标"); self.log_x_check.setChecked(True)
-        self.log_y_check = QCheckBox("幅值对数坐标"); self.log_y_check.setChecked(True)
+        self.log_x_check = QCheckBox("频率对数坐标"); self.log_x_check.setChecked(False)
+        self.log_y_check = QCheckBox("幅值对数坐标"); self.log_y_check.setChecked(False)
         self.log_x_check.toggled.connect(self.redraw_spectrum); self.log_y_check.toggled.connect(self.redraw_spectrum)
         self.log_x_check.toggled.connect(self.schedule_session_save); self.log_y_check.toggled.connect(self.schedule_session_save)
         axes = QWidget(); axes_layout = QHBoxLayout(axes); axes_layout.setContentsMargins(0, 0, 0, 0)
@@ -458,7 +513,25 @@ class MainWindow(QMainWindow):
         for index, (key, text) in enumerate((("background", "背景"), ("time", "时域信号"), ("spectrum", "频谱信号"), ("blank", "空白参考"))):
             button = QPushButton(text); button.clicked.connect(lambda _=False, k=key: self.choose_color(k)); self.color_buttons[key] = button
             color_grid.addWidget(button, index // 2, index % 2)
-        theme_form.addRow("自定义颜色", color_box); layout.addWidget(theme_group)
+        theme_form.addRow("自定义颜色", color_box)
+        self.grid_check = QCheckBox("显示背景网格")
+        self.grid_check.setChecked(bool(self.settings.get("plot_grid", True)))
+        theme_form.addRow("背景网格", self.grid_check)
+        self.line_width_spin = QDoubleSpinBox()
+        self.line_width_spin.setRange(0.2, 5.0); self.line_width_spin.setDecimals(2)
+        self.line_width_spin.setSingleStep(0.1); self.line_width_spin.setSuffix(" pt")
+        self.line_width_spin.setKeyboardTracking(False)
+        try:
+            width = float(self.settings.get("plot_line_width_pt", 0.75))
+            if not np.isfinite(width): width = 0.75
+        except (TypeError, ValueError):
+            width = 0.75
+        self.line_width_spin.setValue(width)
+        self.line_width_spin.setToolTip("统一调整总览、局部波形和频谱曲线的线宽（磅）")
+        theme_form.addRow("线条粗细", self.line_width_spin)
+        self.grid_check.toggled.connect(self.on_plot_style_changed)
+        self.line_width_spin.valueChanged.connect(self.on_plot_style_changed)
+        layout.addWidget(theme_group)
 
         export_row = QHBoxLayout(); self.export_csv_button = QPushButton("导出局部 CSV"); self.export_image_button = QPushButton("导出当前图像")
         self.export_combined_button = QPushButton("导出组合图")
@@ -644,10 +717,19 @@ class MainWindow(QMainWindow):
                 if control.findText(value) >= 0: control.setCurrentText(value)
             control.blockSignals(False)
         for control, key, fallback in (
-            (self.log_x_check, "log_x", True), (self.log_y_check, "log_y", True),
+            (self.log_x_check, "log_x", False), (self.log_y_check, "log_y", False),
             (self.blank_overlay_check, "blank_overlay", True),
         ):
             control.blockSignals(True); control.setChecked(bool(processing.get(key, fallback))); control.blockSignals(False)
+        try:
+            minimum = float(processing.get("frequency_min_hz", 0))
+            maximum = float(processing.get("frequency_max_hz", 1000))
+            if not (np.isfinite(minimum) and np.isfinite(maximum) and 0 <= minimum < maximum <= 1e12):
+                raise ValueError("Invalid frequency range")
+        except (TypeError, ValueError):
+            minimum, maximum = 0.0, 1000.0
+        self.frequency_min_hz, self.frequency_max_hz = minimum, maximum
+        self.redraw_spectrum()
 
     def open_data_folder(self, folder: Path, session_override=None, session_file=None):
         try:
@@ -863,22 +945,44 @@ class MainWindow(QMainWindow):
             parts.append(text)
         self.peaks_label.setText("主要峰：" + ("；".join(parts) or "未找到"))
 
+    def edit_frequency_range(self):
+        dialog = FrequencyRangeDialog(self.frequency_min_hz, self.frequency_max_hz, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.frequency_min_hz, self.frequency_max_hz = dialog.frequency_range()
+            self.redraw_spectrum()
+            self.schedule_session_save()
+
     def redraw_spectrum(self, *_):
         item = self.spectrum_plot.getPlotItem(); item.clear()
         if item.legend is not None:
             item.legend.scene().removeItem(item.legend); item.legend = None
         self.spectrum_plot.addLegend(offset=(10, 10), labelTextColor=self.plot_theme["foreground"])
-        self.spectrum_plot.setLogMode(x=self.log_x_check.isChecked(), y=self.log_y_check.isChecked())
+        log_x, log_y = self.log_x_check.isChecked(), self.log_y_check.isChecked()
+        self.spectrum_plot.setLogMode(x=log_x, y=log_y)
+        minimum, maximum = self.frequency_min_hz, self.frequency_max_hz
+        self.frequency_range_button.setToolTip(f"当前范围：{minimum:g}–{maximum:g} Hz")
+
+        def range_mask(frequency):
+            return np.isfinite(frequency) & (frequency >= minimum) & (frequency <= maximum) & ((frequency > 0) if log_x else True)
+
         if self.last_spectrum:
-            f, y = display_spectrum(self.last_spectrum["frequency"], self.last_spectrum["spectrum"])
-            self.spectrum_plot.plot(f, y, pen=pg.mkPen(self.plot_theme["spectrum"], width=1.0), name="当前数据")
+            mask = range_mask(self.last_spectrum["frequency"])
+            f, y = display_spectrum(self.last_spectrum["frequency"][mask], self.last_spectrum["spectrum"][mask], log_x=log_x, log_y=log_y)
+            self.spectrum_plot.plot(f, y, pen=pg.mkPen(self.plot_theme["spectrum"], width=self.plot_line_width()), name="当前数据")
             self.spectrum_plot.setLabel("left", f"频谱 ({self.last_spectrum['y_unit']})")
         if self.blank_overlay_check.isChecked() and self.blank_reference:
             ref = self.blank_reference; color = QColor(self.plot_theme["blank"])
-            low = self.spectrum_plot.plot(ref["frequency"], ref["q25"], pen=pg.mkPen(color, width=0.5))
-            high = self.spectrum_plot.plot(ref["frequency"], ref["q75"], pen=pg.mkPen(color, width=0.5))
+            mask = range_mask(ref["frequency"])
+            low = self.spectrum_plot.plot(ref["frequency"][mask], ref["q25"][mask], pen=pg.mkPen(color, width=self.plot_line_width()))
+            high = self.spectrum_plot.plot(ref["frequency"][mask], ref["q75"][mask], pen=pg.mkPen(color, width=self.plot_line_width()))
             fill = QColor(color); fill.setAlpha(42); self.spectrum_plot.addItem(pg.FillBetweenItem(low, high, brush=fill))
-            self.spectrum_plot.plot(ref["frequency"], ref["median"], pen=pg.mkPen(color, width=1.1), name="空白中位数")
+            self.spectrum_plot.plot(ref["frequency"][mask], ref["median"][mask], pen=pg.mkPen(color, width=self.plot_line_width()), name="空白中位数")
+        if log_x:
+            # Zero has no logarithm; use a positive display floor without changing the saved range.
+            minimum = minimum if minimum > 0 else maximum / 1000
+            minimum, maximum = np.log10(minimum), np.log10(maximum)
+        self.spectrum_plot.setXRange(minimum, maximum, padding=0)
+        self.spectrum_plot.enableAutoRange(axis="y", enable=True)
 
     def on_spectrum_setting_changed(self):
         self.last_spectrum = None; self.blank_reference = None; self.schedule_spectrum()
@@ -1280,14 +1384,24 @@ class MainWindow(QMainWindow):
         self.theme_combo.blockSignals(True); self.theme_combo.setCurrentText("自定义"); self.theme_combo.blockSignals(False)
         self.settings["theme_name"] = "自定义"; self.settings["custom_theme"] = self.plot_theme; self._save_settings(); self.apply_plot_theme()
 
+    def plot_line_width(self):
+        return self.line_width_spin.value() * self.logicalDpiX() / 72.0
+
+    def on_plot_style_changed(self, *_):
+        self.settings["plot_grid"] = self.grid_check.isChecked()
+        self.settings["plot_line_width_pt"] = self.line_width_spin.value()
+        self._save_settings()
+        self.apply_plot_theme()
+
     def apply_plot_theme(self):
         theme = self.plot_theme
         for plot in (self.overview_plot, self.detail_plot, self.spectrum_plot):
             plot.setBackground(theme["background"])
+            plot.showGrid(x=self.grid_check.isChecked(), y=self.grid_check.isChecked(), alpha=0.18)
             for axis_name in ("left", "bottom"):
                 axis = plot.getAxis(axis_name); axis.setTextPen(theme["foreground"]); axis.setPen(theme["foreground"]); axis.label.setDefaultTextColor(QColor(theme["foreground"]))
         self.overview_plot.setTitle("完整数据总览", color=theme["foreground"]); self.detail_plot.setTitle("局部波形", color=theme["foreground"]); self.spectrum_plot.setTitle("傅里叶变换 / 功率谱", color=theme["foreground"])
-        self.overview_curve.setPen(pg.mkPen(theme["time"], width=0.8)); self.detail_curve.setPen(pg.mkPen(theme["time"], width=0.85))
+        self.overview_curve.setPen(pg.mkPen(theme["time"], width=self.plot_line_width())); self.detail_curve.setPen(pg.mkPen(theme["time"], width=self.plot_line_width()))
         region = QColor(theme["region"]); fill = QColor(region); fill.setAlpha(48)
         for line in self.region.lines: line.setPen(pg.mkPen(region, width=1.3)); line.setHoverPen(pg.mkPen(region.lighter(135), width=2))
         self.region.setBrush(fill)
@@ -1310,6 +1424,7 @@ class MainWindow(QMainWindow):
             "spectrum_mode": self.spectrum_mode_combo.currentText(),
             "window": self.window_combo.currentText(),
             "log_x": self.log_x_check.isChecked(), "log_y": self.log_y_check.isChecked(),
+            "frequency_min_hz": self.frequency_min_hz, "frequency_max_hz": self.frequency_max_hz,
             "blank_overlay": self.blank_overlay_check.isChecked(),
         })
 

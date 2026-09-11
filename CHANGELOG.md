@@ -4,6 +4,12 @@ All notable changes are documented here. This project follows semantic versionin
 
 ## [Unreleased]
 
+## [2.8.0] - 2026-09-11
+
+- Added a background-grid toggle and adjustable curve width (0.2–5 pt) to display settings, applied across all plots and remembered across restarts.
+- Defaulted the spectrum to 0–1000 Hz with linear frequency and amplitude axes; added a frequency-range dialog and session persistence, with sample and blank overlays restricted to the chosen display range.
+- Replaced the local waveform's move-mode button with right-button dragging; left-button selection stays active and mouse-wheel zoom remains available.
+
 ## [2.7.0] - 2026-09-11
 
 - Added compact icon controls for moving, time selection, vertical-axis selection, and rectangular selection in the local waveform panel.
