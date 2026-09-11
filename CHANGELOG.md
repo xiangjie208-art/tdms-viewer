@@ -4,6 +4,10 @@ All notable changes are documented here. This project follows semantic versionin
 
 ## [Unreleased]
 
+## [2.9.1] - 2026-09-12
+
+- Included the new Matplotlib export dependency in Windows packages; supersedes the withdrawn 2.9.0 packages.
+
 ## [2.9.0] - 2026-09-12
 
 - Limited local-waveform wheel zoom-out to visible data extrema with 20% vertical margins, while allowing continued time zoom-out and newly visible peaks; preserved zoom-in and manual axis selections.
