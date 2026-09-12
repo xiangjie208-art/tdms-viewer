@@ -4,6 +4,16 @@ All notable changes are documented here. This project follows semantic versionin
 
 ## [Unreleased]
 
+## [2.10.0] - 2026-09-12
+
+- Added draggable workspace splitters, a collapsible configuration panel, layout persistence, and a default-layout reset.
+- Added one-click folder-wide clustering with sequential background processing, per-file unit conversion, progress, cancellation, error reporting, and candidate caching for file-to-file review.
+- Added TDMS file navigation directly in the cluster panel, with previous/next file buttons, a filename selector, and synchronized file position.
+- Enabled V/Volt/Volts cluster previews with the user-confirmed instrument calibration of 1 V = 1000 pA, recording the conversion factor alongside saved detection parameters.
+- Displayed cluster baseline and amplitude-threshold inputs in pA, with native-current-unit conversion and explicit handling of uncalibrated voltage channels.
+- Added background Gaussian cluster previews with adjustable pA amplitude threshold, FWHM, grouping threshold, baseline, and scope; candidate navigation and manual interval saving preserve raw samples and detection provenance.
+- Included SciPy in runtime and Windows packaging dependencies for the Gaussian convolution implementation.
+
 ## [2.9.1] - 2026-09-12
 
 - Included the new Matplotlib export dependency in Windows packages; supersedes the withdrawn 2.9.0 packages.
