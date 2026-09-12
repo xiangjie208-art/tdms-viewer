@@ -131,7 +131,7 @@ def test_detail_pan_stops_at_file_edges_without_losing_window_width(trace_window
     assert view.viewRange()[0] == pytest.approx(expected)
     x, _ = window.detail_curve.getData()
     assert x[0] == pytest.approx(expected[0])
-    assert x[-1] == pytest.approx(expected[1] - 0.01)
+    assert x[-1] == pytest.approx(expected[1] if expected[1] == 10.0 else expected[1] - 0.01)
 
 
 def test_detail_zoom_updates_selection_but_vertical_pan_does_not(trace_window):

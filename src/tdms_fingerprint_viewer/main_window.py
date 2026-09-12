@@ -31,6 +31,8 @@ from .exporting import (
     write_feature_csv, write_individual_signal_csvs, write_it_raw_csv,
 )
 from .plot_export import figure_pixmap
+from .cluster_panel import ClusterPanel
+from .layout_workspace import LayoutWorkspace
 from .session import (
     app_data_dir, load_session, load_session_file, normalize_session,
     save_session, save_session_file, snapshots_dir,
@@ -385,6 +387,7 @@ class MainWindow(QMainWindow):
         if geometry:
             try: self.restoreGeometry(QByteArray.fromBase64(geometry.encode("ascii")))
             except Exception: pass
+        self.workspace.restore(self.settings.get("workspace_layout"))
         last_session = self.settings.get("last_session_file", "")
         last_folder = self.settings.get("last_data_folder", "")
         if last_session and Path(last_session).is_file():
@@ -400,23 +403,19 @@ class MainWindow(QMainWindow):
         return resolved.name
 
     def _build_ui(self):
-        central = QWidget()
-        grid = QGridLayout(central)
-        grid.setContentsMargins(7, 7, 7, 7); grid.setSpacing(7)
-        grid.setColumnStretch(0, 34); grid.setColumnStretch(1, 66)
-        grid.setRowStretch(0, 43); grid.setRowStretch(1, 57)
-        self.setCentralWidget(central)
+        self.workspace = LayoutWorkspace()
+        self.setCentralWidget(self.workspace)
 
-        self.controls = self._build_controls(); grid.addWidget(self.controls, 0, 0)
+        self.controls = self._build_controls()
+        overview_box = QWidget(); overview_layout = QVBoxLayout(overview_box)
+        overview_layout.setContentsMargins(0, 0, 0, 0)
         self.overview_plot = make_plot("完整数据总览", "记录信号", "时间 (s)")
         self.overview_curve = self.overview_plot.plot(pen=pg.mkPen("#FFFFFF", width=0.8))
         self.region = pg.LinearRegionItem(values=(0, 10), movable=True)
         self.region.setZValue(10); self.overview_plot.addItem(self.region)
-        self.region.sigRegionChanged.connect(self.on_region_changed); grid.addWidget(self.overview_plot, 0, 1)
+        self.region.sigRegionChanged.connect(self.on_region_changed); overview_layout.addWidget(self.overview_plot, 1)
 
         detail_box = QWidget(); detail_layout = QVBoxLayout(detail_box); detail_layout.setContentsMargins(0, 0, 0, 0)
-        self.detail_stats_label = QLabel("局部区间：尚未载入数据"); self.detail_stats_label.setWordWrap(True)
-        self.detail_stats_label.setStyleSheet("padding:4px 7px;background:#F5F7FA;color:#343A40")
         self.detail_view_box = SelectionViewBox()
         self.detail_plot = make_plot("局部波形", "记录信号", "时间 (s)", self.detail_view_box)
         self.detail_curve = self.detail_plot.plot(pen=pg.mkPen("#FFFFFF", width=0.85))
@@ -424,7 +423,7 @@ class MainWindow(QMainWindow):
         self.detail_view_box.selectionFinished.connect(self.on_detail_selection_finished)
         self.detail_view_box.zoomedOut.connect(self.limit_detail_zoom_out)
         self.detail_plot.setToolTip("左键框选；按住右键拖动浏览数据；滚轮缩放。向外缩小时纵轴最多保留可见数据上下各 20% 留白，横轴继续缩放。")
-        detail_header = QHBoxLayout(); detail_header.addWidget(self.detail_stats_label, 1)
+        detail_header = QHBoxLayout(); detail_header.addStretch(1)
         self.detail_mode_buttons = {}
         for mode, tooltip in (("time", "框选时间范围"), ("y", "框选纵轴范围"), ("xy", "框选时间和纵轴范围")):
             button = QToolButton(); button.setCheckable(True); button.setAutoExclusive(True); button.setIcon(mode_icon(mode))
@@ -432,7 +431,7 @@ class MainWindow(QMainWindow):
             button.setProperty("mode", mode); button.clicked.connect(lambda _=False, value=mode: self.set_detail_mode(value))
             self.detail_mode_buttons[mode] = button; detail_header.addWidget(button)
         self.set_detail_mode("time")
-        detail_layout.addLayout(detail_header); detail_layout.addWidget(self.detail_plot, 1); grid.addWidget(detail_box, 1, 0)
+        detail_layout.addLayout(detail_header); detail_layout.addWidget(self.detail_plot, 1)
 
         spectrum_box = QWidget(); spectrum_layout = QVBoxLayout(spectrum_box); spectrum_layout.setContentsMargins(0, 0, 0, 0)
         self.spectrum_info_label = QLabel("频谱：等待选择数据")
@@ -444,7 +443,8 @@ class MainWindow(QMainWindow):
         self.frequency_range_button = QPushButton("频率范围…")
         self.frequency_range_button.clicked.connect(self.edit_frequency_range)
         spectrum_header.addWidget(self.frequency_range_button)
-        spectrum_layout.addLayout(spectrum_header); spectrum_layout.addWidget(self.spectrum_plot, 1); grid.addWidget(spectrum_box, 1, 1)
+        spectrum_layout.addLayout(spectrum_header); spectrum_layout.addWidget(self.spectrum_plot, 1)
+        self.workspace.setup(self.controls, overview_box, detail_box, spectrum_box)
 
         self.progress = QProgressBar(); self.progress.setRange(0, 1); self.progress.setValue(1); self.progress.setTextVisible(False)
         self.statusBar().addPermanentWidget(self.progress, 0); self.statusBar().showMessage("请选择 TDMS 数据文件夹")
@@ -453,6 +453,8 @@ class MainWindow(QMainWindow):
         tabs = QTabWidget()
         tabs.addTab(self._scroll_page(self._build_data_tab()), "数据与频谱")
         tabs.addTab(self._scroll_page(self._build_screening_tab()), "筛选记录")
+        self.cluster_panel = ClusterPanel(self)
+        tabs.addTab(self._scroll_page(self.cluster_panel), "自动寻簇")
         return tabs
 
     def _scroll_page(self, widget):
@@ -764,6 +766,7 @@ class MainWindow(QMainWindow):
         for path in files:
             item = QListWidgetItem(); item.setData(Qt.UserRole, str(path)); self.file_list.addItem(item); self.update_file_item(item, path)
         self.file_list.blockSignals(False); self.file_count_label.setText(f"共 {len(files)} 个 TDMS 文件")
+        self.cluster_panel.refresh_files()
         self.refresh_region_table()
         current_file = self.session.get("processing", {}).get("current_file", "")
         target_row = next((index for index, path in enumerate(files) if self.file_key(path) == current_file or path.name == current_file), 0)
@@ -788,6 +791,8 @@ class MainWindow(QMainWindow):
             self.schedule_session_save(); self.load_current_file(path, channel_key)
 
     def load_current_file(self, path, channel_key=None):
+        self.cluster_panel.loading = True
+        self.cluster_panel.invalidate()
         self.load_token += 1; token = self.load_token
         cache_key = (str(path), channel_key or "AUTO")
         if cache_key in self.cache:
@@ -807,6 +812,7 @@ class MainWindow(QMainWindow):
         if result["token"] != self.load_token: return
         self.current_path = Path(result["path"]); self.current_values = result["values"]
         self.current_channel = result["selected"]; self.current_channels = result["channels"]
+        self.cluster_panel.loaded()
         if self.session is not None:
             processing = self.session.setdefault("processing", {})
             processing["current_file"] = self.file_key(self.current_path); processing["current_channel"] = self.current_channel.key
@@ -929,8 +935,10 @@ class MainWindow(QMainWindow):
     def on_region_changed(self):
         if self.current_values is None or self.current_channel is None: return
         start, end = sorted(self.region.getRegion()); dt = self.current_channel.dt
-        i0 = max(0, min(len(self.current_values) - 1, int(np.floor(start / dt))))
-        i1 = max(i0 + 1, min(len(self.current_values), int(np.ceil(end / dt))))
+        i0 = max(0, min(len(self.current_values) - 1, int(np.floor(round(start / dt, 9)))))
+        i1 = max(i0 + 1, min(len(self.current_values), int(np.ceil(round(end / dt, 9)))))
+        if end >= (len(self.current_values) - 1) * dt:
+            i1 = len(self.current_values)
         self.current_indices = (i0, i1); selected = self.current_values[i0:i1]
         self.sync_time_inputs(start, end)
         x, y = minmax_envelope(selected, dt, start_index=i0, max_bins=8000); self.detail_curve.setData(x, y)
@@ -939,12 +947,6 @@ class MainWindow(QMainWindow):
         self.detail_plot.setXRange(start, max(start + dt, end), padding=0)
         stats = trace_statistics(selected)
         self.current_stats = stats
-        resolution = 1.0 / max(dt, len(selected) * dt)
-        self.detail_stats_label.setText(
-            f"局部区间 {i0 * dt:.5f}–{(i1 - 1) * dt:.5f} s  |  {len(selected):,} 点  |  "
-            f"均值 {stats['mean']:.5g} {self.current_channel.unit}  |  标准差 {stats['std']:.5g}  |  "
-            f"峰峰值 {stats['ptp']:.5g}  |  理论 FFT 分辨率约 {resolution:.4g} Hz"
-        )
         if self.session is not None and self.current_path:
             self.session.setdefault("view_ranges", {})[self.file_key(self.current_path)] = [float(start), float(end)]
             self.schedule_session_save()
@@ -1100,6 +1102,14 @@ class MainWindow(QMainWindow):
             "spectrum_snapshot": str(spectrum_path), "combined_snapshot": str(combined_path),
             "created_at": datetime.now().isoformat(timespec="seconds"),
         }
+        if self.cluster_panel.result is not None:
+            result = self.cluster_panel.result
+            record["cluster_detection"] = {
+                "parameters": dict(result["parameters"]), "baseline": result["baseline"],
+                "kernel": dict(result["kernel"]), "analysis_start_index": result["offset"],
+                "analysis_end_index_exclusive": result["end_index_exclusive"],
+                "manually_reviewed": True,
+            }
         self.export_plot_pixmap("overview").save(str(overview_path), "PNG")
         self.export_plot_pixmap("time").save(str(detail_path), "PNG"); self.export_plot_pixmap("spectrum").save(str(spectrum_path), "PNG")
         self.combined_plot_pixmap(record).save(str(combined_path), "PNG")
@@ -1549,6 +1559,8 @@ class MainWindow(QMainWindow):
         super().keyPressEvent(event)
 
     def closeEvent(self, event):
+        self.cluster_panel.cancel_batch()
+        self.settings["workspace_layout"] = self.workspace.capture()
         self.save_session_now()
         self.settings["geometry"] = bytes(self.saveGeometry().toBase64()).decode("ascii")
         self._save_settings(); event.accept()

@@ -28,7 +28,6 @@ New-Item -ItemType Directory -Path $releasePath -Force | Out-Null
     --exclude-module PyQt5 `
     --exclude-module PyQt6 `
     --exclude-module PySide2 `
-    --exclude-module scipy `
     packaging\pyinstaller_entry.py
 if ($LASTEXITCODE -ne 0) { throw 'PyInstaller failed.' }
 
