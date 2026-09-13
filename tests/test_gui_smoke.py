@@ -27,6 +27,8 @@ def test_main_window_constructs_with_original_four_panel_controls(tmp_path, monk
     assert window.save_progress_button is not None
     assert window.open_session_button is not None
     assert window.export_combined_button is not None
+    assert window.detail_plot.toolTip() == "左键框选；右键拖动；滚轮缩放。"
+    assert window.start_time_spin.toolTip() == "局部窗口起点；超过终点时同步调整终点。"
     window.session = None
     window.current_path = None
     window.close()

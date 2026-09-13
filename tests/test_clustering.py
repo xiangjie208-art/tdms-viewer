@@ -100,6 +100,8 @@ def test_pa_inputs_convert_to_native_and_restore_saved_values(tmp_path, monkeypa
     w.current_channel = ChannelInfo('Current', 'ai0', 1000, .001, unit)
     w.settings['cluster_parameters'] = {unit: {'amplitude': 15/factor, 'baseline': -2/factor, 'baseline_auto': False}}
     panel = w.cluster_panel; panel.loaded()
+    assert "已确认" not in panel.unit_label.text()
+    assert "标定：1 V = 1000 pA" in panel.unit_label.text() if unit.lower() in ("v", "volt", "volts") else True
     assert panel.amplitude.value() == 15
     assert panel.baseline.value() == -2
     assert panel.parameters()['amplitude'] == pytest.approx(15/factor, abs=1e-25)

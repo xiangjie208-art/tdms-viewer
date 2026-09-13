@@ -32,7 +32,7 @@ New-Item -ItemType Directory -Path $releasePath -Force | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'PyInstaller failed.' }
 
 $portableDir = Join-Path $distPath 'TDMS-Viewer'
-Copy-Item -LiteralPath README.md, LICENSE, packaging\PORTABLE_README.txt -Destination $portableDir -Force
+Copy-Item -LiteralPath README.md, README_EN.md, LICENSE, packaging\PORTABLE_README.txt -Destination $portableDir -Force
 New-Item -ItemType Directory -Path (Join-Path $portableDir 'user_data') -Force | Out-Null
 
 $versionOutput = & $python -c "from tdms_fingerprint_viewer import __version__; print(__version__)"
