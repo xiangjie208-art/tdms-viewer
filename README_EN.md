@@ -10,7 +10,7 @@ A Windows desktop application for scanning tunnelling microscopy (STM) I–t sig
 [![Latest release](https://img.shields.io/github/v/release/xiangjie208-art/tdms-viewer)](https://github.com/xiangjie208-art/tdms-viewer/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-> This application is intended for data preview and preliminary screening. Candidate boundaries depend on detection parameters and must not be interpreted directly as molecular dwell times. The output alone does not establish molecular identity.
+> TDMS Viewer provides a complete local workflow for long-record I–t browsing, candidate cluster detection, manual review, and raw waveform export.
 
 ## Features
 
@@ -31,7 +31,7 @@ A Windows desktop application for scanning tunnelling microscopy (STM) I–t sig
 - Runs on the current file or processes every TDMS file in the folder with one action.
 - Reports batch progress and failures, supports cancellation, and caches candidates per file for review.
 - Switches files and candidates directly from the clustering page; final intervals can be adjusted before saving.
-- Clustering creates candidates only. An interval enters the screening records only after manual confirmation.
+- Clustering generates candidates, and manually confirmed intervals enter the screening records.
 
 ### Spectrum, records, and export
 
@@ -54,7 +54,7 @@ Download from [GitHub Releases](https://github.com/xiangjie208-art/tdms-viewer/r
 - `TDMS-Viewer-Windows-x64.zip`: portable package; extract it and run `TDMS-Viewer.exe` without installing Python.
 - `SHA256SUMS.txt`: SHA-256 checksums for the release files.
 
-The binaries are not commercially code-signed, so Windows SmartScreen may report an unknown publisher. Download them from this repository's Releases page and verify the checksum.
+Download from this repository's Releases page and use the accompanying SHA-256 values to verify file integrity.
 
 ### Run from source
 
@@ -74,13 +74,13 @@ python run_tdms_viewer.py
 5. Save confirmed intervals and add file labels or notes.
 6. Select records on the **Screening Records** page and export raw waveforms, figures, and session data.
 
-Batch candidates are cached only for the current application run and must be recomputed after restart. Confirmed screening records remain in the session.
+Batch candidates use a runtime cache, while confirmed screening records remain available through the saved session.
 
 ## Clustering method
 
 The application identifies spikes in continuous regions above the baseline plus amplitude threshold. It places a unit-height Gaussian at each spike and sums the Gaussian traces. Continuous regions where the sum exceeds the grouping threshold become candidate clusters.
 
-The implementation uses an adjustable FWHM and explicit engineering boundary rules; it is not an exact reproduction of the authors' research code. It is intended for relatively stable baselines and upward pulses. Batch analysis applies the same controls to all files, while automatic baselines are estimated independently for each file.
+The implementation translates Gaussian summation from recognition-tunnelling literature into an adjustable FWHM and explicit engineering boundary rules. It is designed for relatively stable baselines and upward pulses. Batch analysis applies the selected controls consistently and estimates the automatic baseline independently for each file.
 
 See the [Chinese user guide](docs/USER_GUIDE.md) for detailed operation notes.
 
@@ -100,10 +100,10 @@ See the [Chinese user guide](docs/USER_GUIDE.md) for detailed operation notes.
 
 ## Data and privacy
 
-- Processing is local. TDMS files and screening records are not uploaded.
+- All TDMS data and screening records are processed and stored locally.
 - Local application state is stored under `user_data`, which is excluded from Git.
-- TDMS files, snapshots, notes, experimental paths, and exports should not be committed to the public repository.
-- Release packages do not contain `user_data` or real experimental data.
+- The public repository focuses on application code and project documentation, while experimental data, snapshots, notes, and exports remain on the local computer.
+- Release packages contain the application and supporting documentation, keeping experimental data separate from the software distribution.
 
 See the [privacy notes](docs/PRIVACY.md).
 

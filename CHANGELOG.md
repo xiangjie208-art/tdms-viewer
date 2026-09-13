@@ -4,6 +4,7 @@ All notable changes are documented here. This project follows semantic versionin
 
 ## [Unreleased]
 
+- Reframed the bilingual project overview and clustering guide around product capabilities, workflow, and intended data conditions.
 - Added linked Chinese and English README pages and updated the repository overview for clustering, batch review, flexible layouts, and scientific figure exports.
 ## [2.10.0] - 2026-09-12
 
