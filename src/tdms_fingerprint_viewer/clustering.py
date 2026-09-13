@@ -22,6 +22,13 @@ def find_clusters(values, dt, parameters, offset=0):
     threshold = float(parameters["threshold"])
     if not np.isfinite([amplitude, width, threshold]).all() or amplitude <= 0 or width <= 0 or not 1e-6 <= threshold < 1:
         raise ValueError("幅值、窗宽必须为正，分簇阈值须在 0.000001–1 之间（不含 1）。")
+    min_peaks_value = parameters.get("min_peaks", 1)
+    if isinstance(min_peaks_value, bool) or not isinstance(min_peaks_value, (int, float, np.integer, np.floating)):
+        raise ValueError("簇内最少峰数必须为正整数。")
+    min_peaks_number = float(min_peaks_value)
+    if not np.isfinite(min_peaks_number) or min_peaks_number < 1 or not min_peaks_number.is_integer():
+        raise ValueError("簇内最少峰数必须为正整数。")
+    min_peaks = int(min_peaks_number)
     baseline = float(np.median(values)) if parameters["baseline_auto"] else float(parameters["baseline"])
     if not np.isfinite(baseline):
         raise ValueError("基线无效。")
@@ -35,11 +42,14 @@ def find_clusters(values, dt, parameters, offset=0):
     rows = []
     for a, b in zip(starts, ends):
         a, b = int(a), int(b)
+        n_seeds = int(np.searchsorted(peaks, b) - np.searchsorted(peaks, a))
+        if n_seeds < min_peaks:
+            continue
         rows.append({"start_index": a + offset, "end_index_exclusive": b + offset,
-                     "n_seeds": int(np.searchsorted(peaks, b) - np.searchsorted(peaks, a)),
+                     "n_seeds": n_seeds,
                      "left_censored": a == 0, "right_censored": b == len(values)})
     return {"rows": rows, "peaks": peaks + offset, "baseline": baseline,
-            "parameters": dict(parameters), "kernel": kernel, "offset": offset,
+            "parameters": dict(parameters, min_peaks=min_peaks), "kernel": kernel, "offset": offset,
             "end_index_exclusive": offset + len(values)}
 
 def true_runs(mask):

@@ -63,6 +63,7 @@ def test_batch_cache_follows_file_navigation_and_parameter_changes(tmp_path, mon
     wait_until(app, lambda: w.current_channel is not None and not panel.loading)
     panel.start_batch()
     assert not panel.amplitude.isEnabled()
+    assert not panel.min_peaks.isEnabled()
     wait_until(app, lambda: panel.batch_worker is None)
     assert len(panel.batch_cache) == 2
     assert panel.table.rowCount() == 1

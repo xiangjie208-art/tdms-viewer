@@ -15,8 +15,8 @@ import pyqtgraph as pg
 from PySide6.QtCore import QByteArray, QObject, QRect, QRectF, QRunnable, QSize, QThreadPool, QTimer, Qt, Signal, Slot
 from PySide6.QtGui import QColor, QFont, QKeyEvent, QPainter, QPixmap, QIcon
 from PySide6.QtWidgets import (
-    QAbstractItemView, QApplication, QCheckBox, QColorDialog, QComboBox, QFileDialog,
-    QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout, QFrame, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListWidget,
+    QAbstractItemView, QApplication, QCheckBox, QColorDialog, QFileDialog,
+    QDialog, QDialogButtonBox, QFormLayout, QFrame, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListWidget,
     QListWidgetItem, QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar,
     QPushButton, QScrollArea, QTabWidget, QTableWidget, QTableWidgetItem, QToolButton,
     QVBoxLayout, QWidget,
@@ -37,6 +37,8 @@ from .session import (
     app_data_dir, load_session, load_session_file, normalize_session,
     save_session, save_session_file, snapshots_dir,
 )
+from .widgets import WheelSafeComboBox as QComboBox
+from .widgets import WheelSafeDoubleSpinBox as QDoubleSpinBox
 
 
 APP_NAME = "TDMS 分子指纹筛选器"

@@ -38,6 +38,21 @@ def test_window_connects_peaks_and_edges_are_marked():
     assert sum(r["n_seeds"] for r in wide["rows"]) == 4
 
 
+def test_minimum_peak_count_filters_completed_clusters():
+    values = np.full(1000, -2.); values[[200, 250, 750]] = 3
+    result = find_clusters(values, .001, params(min_peaks=2))
+    assert len(result["rows"]) == 1
+    assert result["rows"][0]["n_seeds"] == 2
+    assert result["parameters"]["min_peaks"] == 2
+
+
+def test_minimum_peak_count_defaults_to_one_for_existing_parameters():
+    values = np.full(1000, -2.); values[500] = 3
+    result = find_clusters(values, .001, params())
+    assert len(result["rows"]) == 1
+    assert result["parameters"]["min_peaks"] == 1
+
+
 def test_empty_result_and_automatic_baseline():
     result = find_clusters(np.full(1000, -3.), .001, params(baseline_auto=True))
     assert result["baseline"] == -3
@@ -45,7 +60,8 @@ def test_empty_result_and_automatic_baseline():
 
 
 @pytest.mark.parametrize("values,dt,changes", [([0,np.nan],.001,{}), ([0,1],0,{}),
-    ([0,1],.001,{"threshold": 1}), ([0,1],.001,{"fwhm_ms": .01})])
+    ([0,1],.001,{"threshold": 1}), ([0,1],.001,{"fwhm_ms": .01}),
+    ([0,1],.001,{"min_peaks": 0}), ([0,1],.001,{"min_peaks": 1.5})])
 def test_invalid_inputs_are_rejected(values, dt, changes):
     with pytest.raises(ValueError): find_clusters(values, dt, params(**changes))
 
@@ -81,6 +97,7 @@ def test_preview_review_save_and_recompute(tmp_path, monkeypatch, unit):
     assert saved['end_index_exclusive'] == 270
     assert saved['cluster_detection']['parameters']['amplitude'] == 1
     assert saved['cluster_detection']['parameters']['native_to_pa_factor'] == 1000
+    assert saved['cluster_detection']['parameters']['min_peaks'] == 1
     np.testing.assert_array_equal(w.current_values, values)
     panel.threshold.setValue(.2)
     assert panel.result is None and panel.table.rowCount() == 0
@@ -98,7 +115,8 @@ def test_pa_inputs_convert_to_native_and_restore_saved_values(tmp_path, monkeypa
     app = QApplication.instance() or QApplication([])
     w = MainWindow()
     w.current_channel = ChannelInfo('Current', 'ai0', 1000, .001, unit)
-    w.settings['cluster_parameters'] = {unit: {'amplitude': 15/factor, 'baseline': -2/factor, 'baseline_auto': False}}
+    w.settings['cluster_parameters'] = {unit: {'amplitude': 15/factor, 'baseline': -2/factor,
+                                              'baseline_auto': False, 'min_peaks': 4}}
     panel = w.cluster_panel; panel.loaded()
     assert "已确认" not in panel.unit_label.text()
     assert "标定：1 V = 1000 pA" in panel.unit_label.text() if unit.lower() in ("v", "volt", "volts") else True
@@ -106,6 +124,7 @@ def test_pa_inputs_convert_to_native_and_restore_saved_values(tmp_path, monkeypa
     assert panel.baseline.value() == -2
     assert panel.parameters()['amplitude'] == pytest.approx(15/factor, abs=1e-25)
     assert panel.parameters()['baseline'] == pytest.approx(-2/factor, abs=1e-25)
+    assert panel.min_peaks.value() == panel.parameters()['min_peaks'] == 4
     assert panel.run_button.isEnabled()
     assert panel.parameters()['native_to_pa_factor'] == factor
     w.current_channel = ChannelInfo('Current', 'ai0', 1000, .001, 'a.u.')
