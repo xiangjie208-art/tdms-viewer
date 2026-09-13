@@ -7,11 +7,22 @@ from nptdms import ChannelObject, TdmsWriter
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QItemSelectionModel
-from PySide6.QtWidgets import QApplication, QMessageBox, QTabWidget
+from PySide6.QtCore import QItemSelectionModel, QPoint, QPointF, Qt
+from PySide6.QtGui import QWheelEvent
+from PySide6.QtWidgets import QApplication, QMessageBox, QScrollArea, QTabWidget, QVBoxLayout, QWidget
 
 from tdms_fingerprint_viewer.main_window import MainWindow
 from tdms_fingerprint_viewer.exporting import DEFAULT_EXPORT_OPTIONS
+from tdms_fingerprint_viewer.widgets import WheelSafeDoubleSpinBox
+
+
+def send_wheel(widget, delta):
+    position = widget.rect().center()
+    event = QWheelEvent(
+        QPointF(position), QPointF(widget.mapToGlobal(position)), QPoint(), QPoint(0, delta),
+        Qt.NoButton, Qt.NoModifier, Qt.ScrollPhase.NoScrollPhase, False,
+    )
+    QApplication.sendEvent(widget, event)
 
 
 def test_main_window_constructs_with_original_four_panel_controls(tmp_path, monkeypatch):
@@ -33,6 +44,39 @@ def test_main_window_constructs_with_original_four_panel_controls(tmp_path, monk
     window.current_path = None
     window.close()
     app.processEvents()
+
+
+def test_configuration_controls_ignore_wheel_changes(tmp_path, monkeypatch):
+    monkeypatch.setenv("TDMS_VIEWER_DATA_DIR", str(tmp_path / "state"))
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow(); window.show(); app.processEvents()
+    controls = (
+        (window.start_time_spin, 10.0),
+        (window.line_width_spin, 2.0),
+        (window.cluster_panel.amplitude, 15.0),
+        (window.cluster_panel.min_peaks, 3),
+    )
+    for control, value in controls:
+        control.setValue(value)
+        send_wheel(control, 120)
+        assert control.value() == value
+    window.time_unit_combo.setCurrentIndex(0)
+    send_wheel(window.time_unit_combo, -120)
+    assert window.time_unit_combo.currentIndex() == 0
+    window.session = None; window.close(); app.processEvents()
+
+
+def test_configuration_wheel_continues_scrolling_the_page():
+    app = QApplication.instance() or QApplication([])
+    area = QScrollArea(); area.resize(240, 160); area.setWidgetResizable(True)
+    page = QWidget(); page.setMinimumHeight(800)
+    layout = QVBoxLayout(page); spin = WheelSafeDoubleSpinBox(); layout.addWidget(spin); layout.addStretch(1)
+    area.setWidget(page); area.show(); app.processEvents()
+    scroll_bar = area.verticalScrollBar()
+    assert scroll_bar.maximum() > 0
+    send_wheel(spin, -120); app.processEvents()
+    assert scroll_bar.value() > 0
+    area.close(); app.processEvents()
 
 
 def test_processing_controls_and_unsaved_note_are_captured_automatically(tmp_path, monkeypatch):

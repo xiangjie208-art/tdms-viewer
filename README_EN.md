@@ -26,7 +26,7 @@ A Windows desktop application for scanning tunnelling microscopy (STM) I–t sig
 ### Automatic clustering and manual review
 
 - Generates candidate clusters with spike detection and Gaussian summation adapted from recognition-tunnelling literature.
-- Exposes baseline, amplitude threshold, Gaussian width (FWHM), and grouping threshold controls.
+- Exposes baseline, amplitude threshold, Gaussian width (FWHM), grouping threshold, and minimum peaks per cluster controls.
 - Uses pA for baseline and amplitude inputs. V/Volt/Volts channels use the current instrument calibration `1 V = 1000 pA`.
 - Runs on the current file or processes every TDMS file in the folder with one action.
 - Reports batch progress and failures, supports cancellation, and caches candidates per file for review.

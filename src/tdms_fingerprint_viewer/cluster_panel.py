@@ -3,11 +3,14 @@ from threading import Event
 import pyqtgraph as pg
 from PySide6.QtCore import QObject, QRunnable, Signal, Qt
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QFormLayout, QHBoxLayout, QLabel, QComboBox,
-    QDoubleSpinBox, QPushButton, QTableWidget, QTableWidgetItem, QAbstractItemView, QHeaderView, QProgressBar,
+    QWidget, QVBoxLayout, QFormLayout, QHBoxLayout, QLabel, QPushButton,
+    QTableWidget, QTableWidgetItem, QAbstractItemView, QHeaderView, QProgressBar,
 )
 from .clustering import find_clusters
 from .core import minmax_envelope, load_trace
+from .widgets import WheelSafeComboBox as QComboBox
+from .widgets import WheelSafeDoubleSpinBox as QDoubleSpinBox
+from .widgets import WheelSafeSpinBox as QSpinBox
 
 
 CURRENT_TO_PA = {"A": 1e12, "mA": 1e9, "uA": 1e6, "µA": 1e6, "μA": 1e6, "nA": 1e3, "pA": 1.0}
@@ -136,6 +139,10 @@ class ClusterPanel(QWidget):
         form.addRow("高斯窗宽（FWHM）", self.width)
         self.threshold = self.spin(0.000001, 0.999999, 0.1, 6)
         form.addRow("分簇阈值", self.threshold)
+        self.min_peaks = QSpinBox(); self.min_peaks.setRange(1, 1_000_000); self.min_peaks.setValue(1)
+        self.min_peaks.setKeyboardTracking(False)
+        self.min_peaks.setToolTip("峰数达到此值的簇进入候选列表。")
+        form.addRow("簇内最少峰数", self.min_peaks)
         self.window_label = QLabel(); form.addRow("采样点换算", self.window_label)
         self.run_button = QPushButton("预览寻簇")
         self.run_button.setEnabled(False)
@@ -169,7 +176,8 @@ class ClusterPanel(QWidget):
         note.setWordWrap(True); layout.addWidget(note)
         self.baseline_mode.currentIndexChanged.connect(lambda index: self.baseline.setEnabled(index == 1))
         for control in (self.scope, self.baseline_mode): control.currentIndexChanged.connect(self.parameters_changed)
-        for control in (self.baseline, self.amplitude, self.width, self.threshold): control.valueChanged.connect(self.parameters_changed)
+        for control in (self.baseline, self.amplitude, self.width, self.threshold, self.min_peaks):
+            control.valueChanged.connect(self.parameters_changed)
 
     @staticmethod
     def spin(low, high, value, decimals):
@@ -203,7 +211,8 @@ class ClusterPanel(QWidget):
             raise ValueError("未配置通道单位到 pA 的换算。")
         return {"baseline_auto": self.baseline_mode.currentIndex() == 0, "baseline": self.baseline.value() / self.to_pa,
                 "amplitude": self.amplitude.value() / self.to_pa, "fwhm_ms": self.width.value(),
-                "threshold": self.threshold.value(), "unit": self.unit, "scope": self.scope.currentIndex(),
+                "threshold": self.threshold.value(), "min_peaks": self.min_peaks.value(),
+                "unit": self.unit, "scope": self.scope.currentIndex(),
                 "input_unit": "pA", "native_to_pa_factor": self.to_pa}
 
     def parameters_changed(self, *_):
@@ -245,9 +254,11 @@ class ClusterPanel(QWidget):
             self.unit = unit
             self.amplitude.setValue(15)
             self.baseline.setValue(0)
+            self.min_peaks.setValue(1)
             saved = self.window.settings.get("cluster_parameters", {}).get(unit, {})
             for key, control in (("amplitude", self.amplitude), ("baseline", self.baseline),
-                                 ("fwhm_ms", self.width), ("threshold", self.threshold)):
+                                 ("fwhm_ms", self.width), ("threshold", self.threshold),
+                                 ("min_peaks", self.min_peaks)):
                 value = saved.get(key)
                 if isinstance(value, (int, float)) and self.to_pa is not None:
                     if key in ("amplitude", "baseline"): value *= self.to_pa
@@ -292,7 +303,8 @@ class ClusterPanel(QWidget):
         threshold_pa = (result['baseline'] + result['parameters']['amplitude']) * self.to_pa
         if self.baseline_mode.currentIndex() == 0:
             self.baseline.blockSignals(True); self.baseline.setValue(baseline_pa); self.baseline.blockSignals(False)
-        self.status.setText(f"找到 {len(result['rows'])} 个候选簇；基线 {baseline_pa:.6g} pA；检测线 {threshold_pa:.6g} pA。")
+        self.status.setText(f"找到 {len(result['rows'])} 个候选簇；每簇至少 {result['parameters']['min_peaks']} 峰；"
+                            f"基线 {baseline_pa:.6g} pA；检测线 {threshold_pa:.6g} pA。")
         self.draw_overlays()
 
     def update_buttons(self):
@@ -308,7 +320,7 @@ class ClusterPanel(QWidget):
                 self.file_combo.setItemData(i, str(path), Qt.ToolTipRole)
 
     def set_batch_controls(self, running):
-        for control in (self.scope, self.baseline_mode, self.amplitude, self.width, self.threshold):
+        for control in (self.scope, self.baseline_mode, self.amplitude, self.width, self.threshold, self.min_peaks):
             control.setEnabled(not running)
         self.baseline.setEnabled(not running and self.baseline_mode.currentIndex() == 1)
         self.cancel_batch_button.setEnabled(running)
@@ -388,6 +400,7 @@ class ClusterPanel(QWidget):
         self.amplitude.setValue(parameters["amplitude"] * self.to_pa)
         self.baseline.setValue(parameters["baseline"] * self.to_pa)
         self.width.setValue(parameters["fwhm_ms"]); self.threshold.setValue(parameters["threshold"])
+        self.min_peaks.setValue(parameters.get("min_peaks", 1))
         self.restoring_parameters = False
         self.clear_overlays()
         self.finished(None, (self.token, result))
