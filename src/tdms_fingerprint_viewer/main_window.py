@@ -165,7 +165,7 @@ class FrequencyRangeDialog(QDialog):
         self.setWindowTitle("频率显示范围")
         self.setMinimumWidth(340)
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel("仅调整频谱显示范围，保留完整计算结果。"))
+        layout.addWidget(QLabel("仅改变显示范围，保留完整频谱数据。"))
         form = QFormLayout()
         self.minimum_spin = QDoubleSpinBox()
         self.maximum_spin = QDoubleSpinBox()
@@ -422,7 +422,7 @@ class MainWindow(QMainWindow):
         self.detail_view_box.sigRangeChangedManually.connect(self.on_detail_range_changed)
         self.detail_view_box.selectionFinished.connect(self.on_detail_selection_finished)
         self.detail_view_box.zoomedOut.connect(self.limit_detail_zoom_out)
-        self.detail_plot.setToolTip("左键框选；按住右键拖动浏览数据；滚轮缩放。向外缩小时纵轴最多保留可见数据上下各 20% 留白，横轴继续缩放。")
+        self.detail_plot.setToolTip("左键框选；右键拖动；滚轮缩放。")
         detail_header = QHBoxLayout(); detail_header.addStretch(1)
         self.detail_mode_buttons = {}
         for mode, tooltip in (("time", "框选时间范围"), ("y", "框选纵轴范围"), ("xy", "框选时间和纵轴范围")):
@@ -447,7 +447,7 @@ class MainWindow(QMainWindow):
         self.workspace.setup(self.controls, overview_box, detail_box, spectrum_box)
 
         self.progress = QProgressBar(); self.progress.setRange(0, 1); self.progress.setValue(1); self.progress.setTextVisible(False)
-        self.statusBar().addPermanentWidget(self.progress, 0); self.statusBar().showMessage("请选择 TDMS 数据文件夹")
+        self.statusBar().addPermanentWidget(self.progress, 0); self.statusBar().showMessage("未选择 TDMS 数据文件夹")
 
     def _build_controls(self):
         tabs = QTabWidget()
@@ -487,9 +487,9 @@ class MainWindow(QMainWindow):
         self.start_time_spin = QDoubleSpinBox(); self.end_time_spin = QDoubleSpinBox(); self.duration_time_spin = QDoubleSpinBox()
         for spin in (self.start_time_spin, self.end_time_spin, self.duration_time_spin):
             spin.setDecimals(9); spin.setRange(0.0, 1_000_000_000.0); spin.setKeyboardTracking(False); spin.setGroupSeparatorShown(True)
-        self.start_time_spin.setToolTip("输入局部窗口起点；如果超过当前终点，会自动扩大终点。")
-        self.end_time_spin.setToolTip("输入局部窗口终点；如果小于当前起点，会自动调整起点。")
-        self.duration_time_spin.setToolTip("输入窗口宽度；接近数据终点时会自动向左移动以保持宽度。")
+        self.start_time_spin.setToolTip("局部窗口起点；超过终点时同步调整终点。")
+        self.end_time_spin.setToolTip("局部窗口终点；小于起点时同步调整起点。")
+        self.duration_time_spin.setToolTip("局部窗口宽度；到达数据边界时保持宽度。")
         self.start_time_spin.editingFinished.connect(lambda: self.apply_time_input("start"))
         self.end_time_spin.editingFinished.connect(lambda: self.apply_time_input("end"))
         self.duration_time_spin.editingFinished.connect(lambda: self.apply_time_input("duration"))

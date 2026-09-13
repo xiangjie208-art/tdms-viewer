@@ -11,7 +11,7 @@ from .core import minmax_envelope, load_trace
 
 
 CURRENT_TO_PA = {"A": 1e12, "mA": 1e9, "uA": 1e6, "µA": 1e6, "μA": 1e6, "nA": 1e3, "pA": 1.0}
-# User-confirmed instrument calibration, not a general voltage/current conversion.
+# Instrument-specific calibration, not a general voltage/current conversion.
 VOLTAGE_TO_PA = 1000.0
 VOLTAGE_UNITS = {"v", "volt", "volts"}
 
@@ -108,7 +108,7 @@ class ClusterPanel(QWidget):
         self.file_combo.setMinimumWidth(0)
         self.file_combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
         self.file_combo.setMinimumContentsLength(12)
-        self.file_combo.setPlaceholderText("请先打开数据文件夹")
+        self.file_combo.setPlaceholderText("未载入数据文件夹")
         self.file_combo.setAccessibleName("选择 TDMS 文件")
         self.next_file_button = QPushButton("下一文件")
         self.file_position_label = QLabel("0 / 0")
@@ -122,7 +122,7 @@ class ClusterPanel(QWidget):
         window.file_list.currentRowChanged.connect(self.sync_file_selection)
         self.refresh_files()
         form = QFormLayout(); layout.addLayout(form)
-        self.unit_label = QLabel("请先载入通道")
+        self.unit_label = QLabel("未载入通道")
         form.addRow("幅值单位", self.unit_label)
         self.scope = QComboBox(); self.scope.addItems(["当前完整文件", "当前框选区间"])
         form.addRow("分析范围", self.scope)
@@ -142,7 +142,7 @@ class ClusterPanel(QWidget):
         self.run_button.clicked.connect(self.start); layout.addWidget(self.run_button)
         batch_row = QHBoxLayout(); layout.addLayout(batch_row)
         self.batch_button = QPushButton("文件夹一键寻簇")
-        self.batch_button.setToolTip("使用当前通道和参数，分析当前文件夹内每个 TDMS 的完整记录")
+        self.batch_button.setToolTip("按当前参数分析文件夹内全部 TDMS 完整记录。")
         self.batch_button.setEnabled(False); self.batch_button.clicked.connect(self.start_batch)
         self.cancel_batch_button = QPushButton("停止")
         self.cancel_batch_button.setEnabled(False); self.cancel_batch_button.clicked.connect(self.cancel_batch)
@@ -150,7 +150,7 @@ class ClusterPanel(QWidget):
         self.batch_progress = QProgressBar(); self.batch_progress.setVisible(False); layout.addWidget(self.batch_progress)
         self.batch_status = QLabel(""); self.batch_status.setWordWrap(True); layout.addWidget(self.batch_status)
         self.batch_errors = []
-        self.status = QLabel("初始参数仅供试调，请检查幅值阈值与基线。")
+        self.status = QLabel("参数就绪。")
         self.status.setWordWrap(True); layout.addWidget(self.status)
         self.table = QTableWidget(0, 5)
         self.table.setHorizontalHeaderLabels(["簇", "起点 / s", "终点 / s", "时长 / ms", "峰数"])
@@ -165,7 +165,7 @@ class ClusterPanel(QWidget):
         for label, callback in (("上一簇", lambda: self.navigate(-1)), ("下一簇", lambda: self.navigate(1)),
                                 ("保存当前片段", self.save)):
             button = QPushButton(label); button.clicked.connect(callback); buttons.addWidget(button)
-        note = QLabel("点击候选簇定位；可用现有框选调整边界。只有点击保存才加入筛选记录，随后可在筛选记录中导出。带 * 表示接触分析范围边缘。")
+        note = QLabel("选择候选后可调整边界；保存后进入筛选记录。* 表示边缘簇。")
         note.setWordWrap(True); layout.addWidget(note)
         self.baseline_mode.currentIndexChanged.connect(lambda index: self.baseline.setEnabled(index == 1))
         for control in (self.scope, self.baseline_mode): control.currentIndexChanged.connect(self.parameters_changed)
@@ -196,11 +196,11 @@ class ClusterPanel(QWidget):
         self.previous_file_button.setEnabled(valid and row > 0)
         self.next_file_button.setEnabled(valid and row < count-1)
         self.file_position_label.setText(f"{row+1 if valid else 0} / {count}")
-        self.file_combo.setToolTip(str(self.window.files[row]) if valid else "请先打开数据文件夹")
+        self.file_combo.setToolTip(str(self.window.files[row]) if valid else "未载入数据文件夹")
 
     def parameters(self):
         if self.to_pa is None:
-            raise ValueError("通道单位无法换算为 pA，请先确认电流标定。")
+            raise ValueError("未配置通道单位到 pA 的换算。")
         return {"baseline_auto": self.baseline_mode.currentIndex() == 0, "baseline": self.baseline.value() / self.to_pa,
                 "amplitude": self.amplitude.value() / self.to_pa, "fwhm_ms": self.width.value(),
                 "threshold": self.threshold.value(), "unit": self.unit, "scope": self.scope.currentIndex(),
@@ -235,10 +235,10 @@ class ClusterPanel(QWidget):
         self.to_pa = CURRENT_TO_PA.get(unit.strip())
         if unit.strip().casefold() in VOLTAGE_UNITS:
             self.to_pa = VOLTAGE_TO_PA
-            self.unit_label.setText(f"输入使用 pA；原始通道：{unit}；已确认标定：1 V = 1000 pA")
+            self.unit_label.setText(f"pA 输入；原始通道：{unit}；标定：1 V = 1000 pA")
         else:
             self.unit_label.setText(f"输入使用 pA；原始通道：{unit}" if self.to_pa is not None else
-                                    f"原始通道：{unit or '未知单位'}，需确认电流标定后才能使用 pA 寻簇。")
+                                    f"原始通道：{unit or '未知单位'}；未配置 pA 换算。")
         self.unit_label.setWordWrap(True)
         self.restoring_parameters = True
         if unit != self.unit:
