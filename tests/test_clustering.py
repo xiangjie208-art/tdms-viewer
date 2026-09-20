@@ -108,7 +108,7 @@ def test_preview_review_save_and_recompute(tmp_path, monkeypatch, unit):
     w.fft_timer.stop(); w.session_timer.stop(); w.session=None; w.close(); app.processEvents()
 
 
-@pytest.mark.parametrize("unit,factor", [("A", 1e12), ("nA", 1000), ("pA", 1),
+@pytest.mark.parametrize("unit,factor", [("A", 1e12), ("µA", 1e6), ("μA", 1e6), ("nA", 1000), ("pA", 1),
                                        ("V", 1000), ("Volts", 1000), ("volt", 1000)])
 def test_pa_inputs_convert_to_native_and_restore_saved_values(tmp_path, monkeypatch, unit, factor):
     monkeypatch.setenv("TDMS_VIEWER_DATA_DIR", str(tmp_path/'state'))

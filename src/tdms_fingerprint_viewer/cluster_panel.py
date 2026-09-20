@@ -8,19 +8,10 @@ from PySide6.QtWidgets import (
 )
 from .clustering import find_clusters
 from .core import minmax_envelope, load_trace
+from .units import CURRENT_TO_PA, VOLTAGE_TO_PA, VOLTAGE_UNITS, current_factor
 from .widgets import WheelSafeComboBox as QComboBox
 from .widgets import WheelSafeDoubleSpinBox as QDoubleSpinBox
 from .widgets import WheelSafeSpinBox as QSpinBox
-
-
-CURRENT_TO_PA = {"A": 1e12, "mA": 1e9, "uA": 1e6, "µA": 1e6, "μA": 1e6, "nA": 1e3, "pA": 1.0}
-# Instrument-specific calibration, not a general voltage/current conversion.
-VOLTAGE_TO_PA = 1000.0
-VOLTAGE_UNITS = {"v", "volt", "volts"}
-
-
-def current_factor(unit):
-    return VOLTAGE_TO_PA if unit.strip().casefold() in VOLTAGE_UNITS else CURRENT_TO_PA.get(unit.strip())
 
 
 def file_stamp(path):
@@ -241,7 +232,7 @@ class ClusterPanel(QWidget):
         self.loading = False
         self.invalidate()
         unit = self.window.current_channel.unit
-        self.to_pa = CURRENT_TO_PA.get(unit.strip())
+        self.to_pa = current_factor(unit)
         if unit.strip().casefold() in VOLTAGE_UNITS:
             self.to_pa = VOLTAGE_TO_PA
             self.unit_label.setText(f"pA 输入；原始通道：{unit}；标定：1 V = 1000 pA")
