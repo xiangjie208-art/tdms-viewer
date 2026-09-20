@@ -43,6 +43,27 @@ def test_main_window_constructs_with_original_four_panel_controls(tmp_path, monk
     window.session = None
     window.current_path = None
     window.close()
+
+
+def test_screening_page_opens_machine_learning_dataset_dialog(monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    opened = []
+
+    class StubDialog:
+        def __init__(self, parent):
+            assert isinstance(parent, MainWindow)
+
+        def exec(self):
+            opened.append(True)
+
+    monkeypatch.setattr("tdms_fingerprint_viewer.main_window.DatasetDialog", StubDialog)
+    window = MainWindow()
+
+    assert window.dataset_button.text() == "制作机器学习数据集…"
+    window.dataset_button.click()
+
+    assert opened == [True]
+    window.close()
     app.processEvents()
 
 

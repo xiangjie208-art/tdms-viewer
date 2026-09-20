@@ -4,6 +4,13 @@ All notable changes are documented here. This project follows semantic versionin
 
 ## [Unreleased]
 
+## [2.12.0] - 2026-09-20
+
+- Added one-click machine-learning dataset creation from saved intervals across first-level molecule folders, with editable labels that can merge equivalent molecule classes.
+- Added a minimal `dataset.csv` plus compressed per-sample NPZ structure containing relative time and unfiltered pA waveforms.
+- Added consistent full-record median baselines, waveform statistics, threshold-peak features, and 0–1000 Hz spectral features with a shared default 10 pA threshold.
+- Added background progress and cancellation, deterministic deduplication, atomic final output, and continued export of valid samples when individual sources need attention.
+
 ## [2.11.0] - 2026-09-13
 
 - Prevented mouse-wheel scrolling over configuration inputs from changing numeric values or selections.

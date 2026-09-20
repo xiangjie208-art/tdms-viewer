@@ -40,6 +40,7 @@ A Windows desktop application for scanning tunnelling microscopy (STM) I–t sig
 - Samples up to 10 blank records and overlays their median spectrum and interquartile range.
 - Provides candidate, review, no-feature, noisy, and excluded labels with notes.
 - Exports raw I–t CSV, per-signal CSV, feature summaries, PNG figures, session JSON, and HTML reports.
+- Builds a machine-learning dataset from saved intervals across multiple molecule folders, with editable labels for merging equivalent classes.
 - Produces white-background scientific figures with thin black lines, inward ticks, and no grid by default.
 - Saves progress automatically and supports named sessions, backup recovery, and relocated data folders.
 - Includes dark, light, and custom themes with configurable display grids and line widths.
@@ -72,7 +73,8 @@ python run_tdms_viewer.py
 3. Run **Preview Clusters** for one file or **Cluster Entire Folder** for batch detection.
 4. Review candidates one by one and adjust final boundaries with the waveform selection tools.
 5. Save confirmed intervals and add file labels or notes.
-6. Select records on the **Screening Records** page and export raw waveforms, figures, and session data.
+6. To build a machine-learning dataset, select the parent of the molecule folders, confirm or merge class labels, and start with the default `10 pA` feature-peak threshold.
+7. You can also select records on the **Screening Records** page and export raw waveforms, figures, and session data.
 
 Batch candidates use a runtime cache, while confirmed screening records remain available through the saved session.
 

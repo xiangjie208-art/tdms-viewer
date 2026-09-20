@@ -30,6 +30,7 @@ from .exporting import (
     DEFAULT_EXPORT_OPTIONS, region_export_basename, unique_export_basename,
     write_feature_csv, write_individual_signal_csvs, write_it_raw_csv,
 )
+from .dataset_dialog import DatasetDialog
 from .plot_export import figure_pixmap
 from .cluster_panel import ClusterPanel
 from .layout_workspace import LayoutWorkspace
@@ -584,8 +585,15 @@ class MainWindow(QMainWindow):
         self.delete_region_button.clicked.connect(self.delete_selected_region)
         self.export_selected_button.clicked.connect(self.export_selected_results); self.export_results_button.clicked.connect(self.export_results)
         row.addWidget(self.delete_region_button); row.addWidget(self.export_selected_button); row.addWidget(self.export_results_button); layout.addLayout(row)
+        self.dataset_button = QPushButton("制作机器学习数据集…")
+        self.dataset_button.clicked.connect(self.open_dataset_dialog)
+        layout.addWidget(self.dataset_button)
         hint = QLabel("区间表支持 Ctrl/Shift 多选。快捷键：←/→ 移动选择框，↑/↓ 切换文件，Shift+←/→ 精细移动，Ctrl+← 缩窄、Ctrl+→ 加宽；A 候选，R 待复查，X 排除，S 保存区间，F 切换 FFT 范围，Space 显示/隐藏空白。")
         hint.setWordWrap(True); hint.setStyleSheet("color:#56606A;padding:5px"); layout.addWidget(hint); return tab
+
+    def open_dataset_dialog(self):
+        dialog = DatasetDialog(self)
+        dialog.exec()
 
     def time_display_scale(self):
         return 1000.0 if self.time_unit_combo.currentIndex() == 1 else 1.0
