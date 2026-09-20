@@ -134,14 +134,30 @@ def _strict_region_bounds(region: dict, dt: float, length: int) -> tuple[int, in
     return start, end
 
 
-def _region_sort_key(region: dict) -> tuple:
+def _sort_number(value, fallback: float = -1.0) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    return number if np.isfinite(number) else fallback
+
+
+def _region_sort_key(region: dict, folder: Path | None = None) -> tuple:
+    stored_file = str(region.get("file") or region.get("file_name") or "")
+    file_key = stored_file.casefold()
+    if folder is not None:
+        try:
+            resolved = resolve_region_file(region, folder)
+            if resolved is not None:
+                file_key = str(resolved.resolve()).casefold()
+        except (OSError, ValueError):
+            pass
     return (
-        str(region.get("file") or region.get("file_name") or "").casefold(),
+        file_key,
         str(region.get("channel") or "").casefold(),
-        int(region.get("start_index", -1)) if str(region.get("start_index", "")).lstrip("-").isdigit() else -1,
-        float(region.get("start_s", -1.0)),
-        int(region.get("end_index_exclusive", -1))
-        if str(region.get("end_index_exclusive", "")).lstrip("-").isdigit() else -1,
+        _sort_number(region.get("start_index")),
+        _sort_number(region.get("start_s")),
+        _sort_number(region.get("end_index_exclusive")),
     )
 
 
@@ -209,7 +225,10 @@ def build_ml_dataset(
     try:
         waveform_dir.mkdir(parents=True)
         for source, session in sessions:
-            regions = sorted(session.get("regions", []), key=_region_sort_key)
+            regions = sorted(
+                session.get("regions", []),
+                key=lambda region: _region_sort_key(region, source.folder),
+            )
             for region in regions:
                 if is_cancelled():
                     shutil.rmtree(temp_dir, ignore_errors=True)
@@ -225,6 +244,7 @@ def build_ml_dataset(
                     cache_key = (source_path, requested_channel)
                     cached = channel_cache.get(cache_key)
                     if cached is None:
+                        channel_cache.clear()
                         try:
                             native_values, channel, _ = load_trace(source_path, requested_channel or None)
                             if requested_channel and channel.key != requested_channel:

@@ -96,3 +96,30 @@ def test_dialog_stop_requests_worker_cancellation(tmp_path):
     assert dialog.worker.was_cancelled
     assert "正在停止" in dialog.status_label.text()
     dialog.close()
+
+
+def test_dialog_reject_stops_worker_and_stays_open_until_completion(tmp_path):
+    application = app()
+    dialog = DatasetDialog(discoverer=lambda root: sources(tmp_path))
+    dialog.set_root(tmp_path)
+    dialog.set_output_parent(tmp_path / "exports")
+
+    class StubWorker:
+        def __init__(self):
+            self.was_cancelled = False
+
+        def cancel(self):
+            self.was_cancelled = True
+
+    dialog.worker = StubWorker()
+    dialog.set_running(True)
+    dialog.show()
+    application.processEvents()
+
+    dialog.reject()
+
+    assert dialog.worker.was_cancelled
+    assert dialog.isVisible()
+    assert "正在停止" in dialog.status_label.text()
+    dialog.worker = None
+    dialog.close()

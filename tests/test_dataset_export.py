@@ -1,6 +1,8 @@
 import csv
 from dataclasses import replace
+import gc
 from pathlib import Path
+import weakref
 
 import numpy as np
 import pytest
@@ -283,3 +285,71 @@ def test_build_with_no_valid_sample_publishes_no_dataset(tmp_path, monkeypatch):
         build_ml_dataset(root, output_parent, [source], 10.0)
 
     assert list(output_parent.iterdir()) == []
+
+
+def test_build_skips_malformed_time_bounds_without_stopping_valid_samples(tmp_path, monkeypatch):
+    base = {"file": "trace_1.tdms", "file_name": "trace_1.tdms", "channel": "Signal/Current"}
+    regions = [
+        {**base, "start_s": "broken", "end_s": "also-broken"},
+        {**base, "start_index": 1, "end_index_exclusive": 5},
+    ]
+    root, _folder, source = make_source(tmp_path, monkeypatch, regions)
+    monkeypatch.setattr("tdms_fingerprint_viewer.dataset_export.load_trace", lambda path, key: fake_trace())
+
+    summary = build_ml_dataset(root, tmp_path / "exports", [source], 10.0)
+
+    assert summary.sample_count == 1
+    assert len(summary.skipped) == 1
+    assert "could not convert" in summary.skipped[0].reason
+
+
+def test_build_releases_earlier_channel_arrays_during_large_batches(tmp_path, monkeypatch):
+    monkeypatch.setenv("TDMS_VIEWER_DATA_DIR", str(tmp_path / "app-data"))
+    root = tmp_path / "molecules"
+    folder = root / "glycine"
+    folder.mkdir(parents=True)
+    regions = []
+    for number in range(1, 4):
+        file_name = f"trace_{number}.tdms"
+        (folder / file_name).touch()
+        regions.append({
+            "file": file_name,
+            "file_name": file_name,
+            "channel": "Signal/Current",
+            "start_index": 1,
+            "end_index_exclusive": 5,
+        })
+    save_session({"data_folder": str(folder), "regions": regions})
+    source = discover_dataset_sources(root)[0]
+    native_marker = object()
+    real_asarray = np.asarray
+    converted_refs = []
+    load_count = 0
+
+    class NativeProxy:
+        def __mul__(self, factor):
+            converted = real_asarray([1, 2, 20, 22, 2, 1], dtype=np.float64) * factor
+            converted_refs.append(weakref.ref(converted))
+            return converted
+
+    def tracking_asarray(value, dtype=None):
+        if value is native_marker:
+            return NativeProxy()
+        return real_asarray(value, dtype=dtype)
+
+    def tracked_load(path, key):
+        nonlocal load_count
+        if load_count == 2:
+            gc.collect()
+            assert converted_refs[0]() is None
+        load_count += 1
+        channel = ChannelInfo("Signal", "Current", 6, 0.001, "pA")
+        return native_marker, channel, [channel]
+
+    monkeypatch.setattr("tdms_fingerprint_viewer.dataset_export.np.asarray", tracking_asarray)
+    monkeypatch.setattr("tdms_fingerprint_viewer.dataset_export.load_trace", tracked_load)
+
+    summary = build_ml_dataset(root, tmp_path / "exports", [source], 10.0)
+
+    assert summary.sample_count == 3
+    assert load_count == 3

@@ -265,6 +265,12 @@ class DatasetDialog(QDialog):
         self.stop_button.setEnabled(False)
         self.status_label.setText("正在停止，等待当前操作完成…")
 
+    def reject(self):
+        if self.worker is not None:
+            self.stop_build()
+            return
+        super().reject()
+
     @Slot(int, int, str)
     def on_progress(self, done: int, total: int, description: str):
         self.progress_bar.setRange(0, max(1, total))
