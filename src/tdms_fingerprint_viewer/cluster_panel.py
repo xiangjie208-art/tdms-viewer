@@ -1,12 +1,13 @@
 """Manual review of transient Gaussian cluster candidates."""
 from threading import Event
+import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import QObject, QRunnable, Signal, Qt
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QFormLayout, QHBoxLayout, QLabel, QPushButton,
     QTableWidget, QTableWidgetItem, QAbstractItemView, QHeaderView, QProgressBar,
 )
-from .clustering import find_clusters
+from .clustering import automatic_maximum_amplitude, event_candidates, find_clusters
 from .core import minmax_envelope, load_trace
 from .units import CURRENT_TO_PA, VOLTAGE_TO_PA, VOLTAGE_UNITS, current_factor
 from .widgets import WheelSafeComboBox as QComboBox
@@ -34,11 +35,45 @@ class BatchClusterWorker(QRunnable):
 
     def run(self):
         success = failed = 0
+        preflight = {}
+        folder_maximum_pa = None
+        folder_peak_count = 0
+        if self.parameters.get("max_amplitude_auto", False):
+            amplitudes_pa = []
+            for path in self.files:
+                if self.cancelled.is_set(): break
+                try:
+                    stamp = file_stamp(path)
+                    values, channel, _ = load_trace(path, self.channel_key)
+                    if channel.key != self.channel_key:
+                        raise ValueError(f"缺少通道 {self.channel_key}")
+                    factor = current_factor(channel.unit)
+                    if factor is None:
+                        raise ValueError(f"无法换算单位 {channel.unit} 为 pA")
+                    baseline = (float(np.median(values)) if self.parameters["baseline_auto"]
+                                else self.parameters["baseline"] / factor)
+                    _, amplitudes = event_candidates(values, baseline, self.parameters["amplitude"] / factor)
+                    amplitudes_pa.extend((amplitudes * factor).tolist())
+                    preflight[path] = {"stamp": stamp}
+                except Exception as exc:
+                    preflight[path] = {"error": str(exc)}
+            if self.cancelled.is_set():
+                self.signals.done.emit({"success": 0, "failed": 0, "cancelled": True})
+                return
+            folder_peak_count = len(amplitudes_pa)
+            folder_maximum_pa = automatic_maximum_amplitude(amplitudes_pa)
+            if folder_maximum_pa is None:
+                folder_maximum_pa = float(self.parameters["max_amplitude"])
         for index, path in enumerate(self.files):
             if self.cancelled.is_set(): break
             payload = {"path": path, "index": index + 1}
             try:
+                prior = preflight.get(path, {})
+                if "error" in prior:
+                    raise ValueError(prior["error"])
                 stamp = file_stamp(path)
+                if prior and stamp != prior["stamp"]:
+                    raise ValueError("自动上限统计后文件发生变化，请重新运行")
                 values, channel, _ = load_trace(path, self.channel_key)
                 if channel.key != self.channel_key:
                     raise ValueError(f"缺少通道 {self.channel_key}")
@@ -49,6 +84,13 @@ class BatchClusterWorker(QRunnable):
                 parameters = dict(self.parameters, unit=channel.unit, native_to_pa_factor=factor, scope=0)
                 parameters["baseline"] /= factor
                 parameters["amplitude"] /= factor
+                if "max_amplitude" in parameters:
+                    parameters["max_amplitude"] /= factor
+                if folder_maximum_pa is not None:
+                    parameters["auto_max_amplitude"] = folder_maximum_pa / factor
+                    parameters["auto_maximum_source"] = ("folder_auto" if folder_peak_count >= 20
+                                                          else "manual_fallback")
+                    parameters["auto_maximum_peak_count"] = folder_peak_count
                 result = find_clusters(values, channel.dt, parameters)
                 if file_stamp(path) != stamp:
                     raise ValueError("分析期间文件发生变化，请重新运行")
@@ -126,6 +168,14 @@ class ClusterPanel(QWidget):
         self.baseline.setEnabled(False); form.addRow("基线值（pA）", self.baseline)
         self.amplitude = self.spin(1e-6, 1e12, 15, 6)
         form.addRow("高于基线的幅值（pA）", self.amplitude)
+        self.maximum_mode = QComboBox()
+        self.maximum_mode.addItems(["自动（极端离群值）", "手动设置"])
+        self.maximum_mode.setToolTip("自动模式在峰幅值的对数尺度上使用 Q3 + 3×IQR 识别极端离群峰。")
+        form.addRow("最大峰限制", self.maximum_mode)
+        self.max_amplitude = self.spin(1e-6, 1e12, 1000, 6)
+        self.max_amplitude.setEnabled(False)
+        self.max_amplitude.setToolTip("自动统计少于 20 个候选峰时采用此上限。")
+        form.addRow("手动最大峰幅值（pA）", self.max_amplitude)
         self.width = self.spin(0.001, 10000, 40, 3); self.width.setSuffix(" ms")
         form.addRow("高斯窗宽（FWHM）", self.width)
         self.threshold = self.spin(0.000001, 0.999999, 0.1, 6)
@@ -166,8 +216,10 @@ class ClusterPanel(QWidget):
         note = QLabel("选择候选后可调整边界；保存后进入筛选记录。* 表示边缘簇。")
         note.setWordWrap(True); layout.addWidget(note)
         self.baseline_mode.currentIndexChanged.connect(lambda index: self.baseline.setEnabled(index == 1))
-        for control in (self.scope, self.baseline_mode): control.currentIndexChanged.connect(self.parameters_changed)
-        for control in (self.baseline, self.amplitude, self.width, self.threshold, self.min_peaks):
+        self.maximum_mode.currentIndexChanged.connect(lambda index: self.max_amplitude.setEnabled(index == 1))
+        for control in (self.scope, self.baseline_mode, self.maximum_mode):
+            control.currentIndexChanged.connect(self.parameters_changed)
+        for control in (self.baseline, self.amplitude, self.max_amplitude, self.width, self.threshold, self.min_peaks):
             control.valueChanged.connect(self.parameters_changed)
 
     @staticmethod
@@ -202,6 +254,8 @@ class ClusterPanel(QWidget):
             raise ValueError("未配置通道单位到 pA 的换算。")
         return {"baseline_auto": self.baseline_mode.currentIndex() == 0, "baseline": self.baseline.value() / self.to_pa,
                 "amplitude": self.amplitude.value() / self.to_pa, "fwhm_ms": self.width.value(),
+                "max_amplitude_auto": self.maximum_mode.currentIndex() == 0,
+                "max_amplitude": self.max_amplitude.value() / self.to_pa,
                 "threshold": self.threshold.value(), "min_peaks": self.min_peaks.value(),
                 "unit": self.unit, "scope": self.scope.currentIndex(),
                 "input_unit": "pA", "native_to_pa_factor": self.to_pa}
@@ -244,17 +298,21 @@ class ClusterPanel(QWidget):
         if unit != self.unit:
             self.unit = unit
             self.amplitude.setValue(15)
+            self.maximum_mode.setCurrentIndex(0)
+            self.max_amplitude.setValue(1000)
             self.baseline.setValue(0)
             self.min_peaks.setValue(1)
             saved = self.window.settings.get("cluster_parameters", {}).get(unit, {})
             for key, control in (("amplitude", self.amplitude), ("baseline", self.baseline),
+                                 ("max_amplitude", self.max_amplitude),
                                  ("fwhm_ms", self.width), ("threshold", self.threshold),
                                  ("min_peaks", self.min_peaks)):
                 value = saved.get(key)
                 if isinstance(value, (int, float)) and self.to_pa is not None:
-                    if key in ("amplitude", "baseline"): value *= self.to_pa
+                    if key in ("amplitude", "baseline", "max_amplitude"): value *= self.to_pa
                     control.setValue(value)
             self.baseline_mode.setCurrentIndex(0 if saved.get("baseline_auto", True) else 1)
+            self.maximum_mode.setCurrentIndex(0 if saved.get("max_amplitude_auto", True) else 1)
         self.restoring_parameters = False
         self.update_samples()
         self.update_buttons()
@@ -292,10 +350,15 @@ class ClusterPanel(QWidget):
             for j, value in enumerate(values): self.table.setItem(i, j, QTableWidgetItem(value))
         baseline_pa = result['baseline'] * self.to_pa
         threshold_pa = (result['baseline'] + result['parameters']['amplitude']) * self.to_pa
+        maximum_pa = result['parameters']['effective_max_amplitude'] * self.to_pa
+        source = {"auto": "自动上限", "folder_auto": "文件夹自动上限",
+                  "manual_fallback": "候选峰不足，采用手动上限", "manual": "手动上限"}.get(
+                      result['parameters']['maximum_source'], "最大峰上限")
         if self.baseline_mode.currentIndex() == 0:
             self.baseline.blockSignals(True); self.baseline.setValue(baseline_pa); self.baseline.blockSignals(False)
         self.status.setText(f"找到 {len(result['rows'])} 个候选簇；每簇至少 {result['parameters']['min_peaks']} 峰；"
-                            f"基线 {baseline_pa:.6g} pA；检测线 {threshold_pa:.6g} pA。")
+                            f"基线 {baseline_pa:.6g} pA；检测线 {threshold_pa:.6g} pA；"
+                            f"{source} {maximum_pa:.6g} pA；排除 {result['rejected_clusters']} 个含极大值的簇。")
         self.draw_overlays()
 
     def update_buttons(self):
@@ -311,9 +374,11 @@ class ClusterPanel(QWidget):
                 self.file_combo.setItemData(i, str(path), Qt.ToolTipRole)
 
     def set_batch_controls(self, running):
-        for control in (self.scope, self.baseline_mode, self.amplitude, self.width, self.threshold, self.min_peaks):
+        for control in (self.scope, self.baseline_mode, self.amplitude, self.maximum_mode,
+                        self.max_amplitude, self.width, self.threshold, self.min_peaks):
             control.setEnabled(not running)
         self.baseline.setEnabled(not running and self.baseline_mode.currentIndex() == 1)
+        self.max_amplitude.setEnabled(not running and self.maximum_mode.currentIndex() == 1)
         self.cancel_batch_button.setEnabled(running)
         self.update_buttons()
 
@@ -324,7 +389,8 @@ class ClusterPanel(QWidget):
         self.invalidate(); self.batch_cache.clear(); self.reset_file_names(); self.batch_errors = []
         parameters = self.parameters()
         w.settings.setdefault("cluster_parameters", {})[self.unit] = parameters; w._save_settings()
-        parameters = dict(parameters, amplitude=self.amplitude.value(), baseline=self.baseline.value())
+        parameters = dict(parameters, amplitude=self.amplitude.value(), baseline=self.baseline.value(),
+                          max_amplitude=self.max_amplitude.value())
         worker = BatchClusterWorker(list(w.files), w.current_channel.key, parameters)
         self.batch_worker = worker
         self.batch_folder = w.data_folder
@@ -389,6 +455,8 @@ class ClusterPanel(QWidget):
         self.scope.setCurrentIndex(0)
         self.baseline_mode.setCurrentIndex(0 if parameters["baseline_auto"] else 1)
         self.amplitude.setValue(parameters["amplitude"] * self.to_pa)
+        self.maximum_mode.setCurrentIndex(0 if parameters.get("max_amplitude_auto", True) else 1)
+        self.max_amplitude.setValue(parameters.get("max_amplitude", 1000 / self.to_pa) * self.to_pa)
         self.baseline.setValue(parameters["baseline"] * self.to_pa)
         self.width.setValue(parameters["fwhm_ms"]); self.threshold.setValue(parameters["threshold"])
         self.min_peaks.setValue(parameters.get("min_peaks", 1))

@@ -27,6 +27,7 @@ A Windows desktop application for scanning tunnelling microscopy (STM) I–t sig
 
 - Generates candidate clusters with spike detection and Gaussian summation adapted from recognition-tunnelling literature.
 - Exposes baseline, amplitude threshold, Gaussian width (FWHM), grouping threshold, and minimum peaks per cluster controls.
+- Detects extreme peak-amplitude outliers on a logarithmic scale by default and rejects every candidate cluster containing one; a manual upper limit is also available.
 - Uses pA for baseline and amplitude inputs. V/Volt/Volts channels use the current instrument calibration `1 V = 1000 pA`.
 - Runs on the current file or processes every TDMS file in the folder with one action.
 - Reports batch progress and failures, supports cancellation, and caches candidates per file for review.
@@ -80,9 +81,9 @@ Batch candidates use a runtime cache, while confirmed screening records remain a
 
 ## Clustering method
 
-The application identifies spikes in continuous regions above the baseline plus amplitude threshold. It places a unit-height Gaussian at each spike and sums the Gaussian traces. Continuous regions where the sum exceeds the grouping threshold become candidate clusters.
+The application identifies spikes in continuous regions above the baseline plus amplitude threshold. It detects extreme outliers with a `Q3 + 3×IQR` fence on log peak amplitudes, then places a unit-height Gaussian at every valid spike and sums the Gaussian traces. Continuous regions where the sum exceeds the grouping threshold become candidate clusters; a candidate containing an extreme outlier is rejected in full.
 
-The implementation translates Gaussian summation from recognition-tunnelling literature into an adjustable FWHM and explicit engineering boundary rules. It is designed for relatively stable baselines and upward pulses. Batch analysis applies the selected controls consistently and estimates the automatic baseline independently for each file.
+The implementation translates Gaussian summation from recognition-tunnelling literature into an adjustable FWHM and explicit engineering boundary rules. It is designed for relatively stable baselines and upward pulses. Batch analysis applies the selected controls consistently, estimates the automatic baseline independently for each file, and derives one outlier limit from all candidate peaks in the folder.
 
 See the [Chinese user guide](docs/USER_GUIDE.md) for detailed operation notes.
 

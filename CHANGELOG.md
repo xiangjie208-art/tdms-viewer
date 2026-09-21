@@ -4,6 +4,9 @@ All notable changes are documented here. This project follows semantic versionin
 
 ## [Unreleased]
 
+- Added automatic extreme peak-amplitude rejection using a conservative `Q3 + 3×IQR` fence on logarithmic peak amplitudes, with one shared limit for folder-wide clustering.
+- Added a manual maximum-peak control and excluded complete candidate clusters containing an over-limit peak, with the applied limit and rejection count shown in the cluster status.
+
 ## [2.12.0] - 2026-09-20
 
 - Added one-click machine-learning dataset creation from saved intervals across first-level molecule folders, with editable labels that can merge equivalent molecule classes.
