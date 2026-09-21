@@ -239,7 +239,7 @@ class ExportOptionsDialog(QDialog):
 
 class WorkerSignals(QObject):
     result = Signal(object)
-    error = Signal(str)
+    error = Signal(object)
     progress = Signal(str)
 
 
@@ -265,7 +265,9 @@ class LoadWorker(QRunnable):
                 "selected": selected, "channels": channels,
             })
         except Exception:
-            safe_emit(self.signals.error, traceback.format_exc())
+            safe_emit(self.signals.error, {
+                "token": self.token, "path": self.path, "details": traceback.format_exc(),
+            })
 
 
 class SpectrumWorker(QRunnable):
@@ -349,6 +351,7 @@ class MainWindow(QMainWindow):
         self.current_values = None
         self.current_channel = None
         self.current_channels = []
+        self.unreadable_files = {}
         self.current_stats = {}
         self.current_indices = (0, 0)
         self.last_spectrum = None
@@ -771,7 +774,12 @@ class MainWindow(QMainWindow):
         if self.active_session_file: self.settings["last_session_file"] = str(self.active_session_file)
         else: self.settings.pop("last_session_file", None)
         self._save_settings(); self._apply_processing_controls()
-        self.cache.clear(); self.blank_reference = None
+        self.load_token += 1
+        self.cache.clear(); self.blank_reference = None; self.unreadable_files = {}
+        self.current_path = None; self.current_values = None; self.current_channel = None; self.current_channels = []
+        self.current_indices = (0, 0); self.current_stats = {}; self.last_spectrum = None
+        self.overview_curve.setData([], []); self.detail_curve.setData([], [])
+        self.spectrum_plot.getPlotItem().clear(); self.peaks_label.setText("主要峰：尚未计算")
         self.file_list.blockSignals(True); self.file_list.clear()
         for path in files:
             item = QListWidgetItem(); item.setData(Qt.UserRole, str(path)); self.file_list.addItem(item); self.update_file_item(item, path)
@@ -786,6 +794,12 @@ class MainWindow(QMainWindow):
         if self.blank_folder and self.blank_overlay_check.isChecked(): self.start_blank_reference()
 
     def update_file_item(self, item, path):
+        failure = self.unreadable_files.get(str(path.resolve()))
+        if failure:
+            item.setText(f"⚠  {path.name} [无法读取]")
+            item.setForeground(QColor("#EF5350"))
+            item.setToolTip(f"{path}\n{failure}")
+            return
         marks = (self.session or {}).get("file_marks", {})
         tag = marks.get(self.file_key(path), marks.get(path.name, "未标记"))
         item.setText(f"{TAG_SYMBOLS.get(tag, '○')}  {path.name}"); item.setForeground(QColor(TAG_COLORS.get(tag, "#AAB2BD")))
@@ -796,9 +810,7 @@ class MainWindow(QMainWindow):
             path = self.files[row]; key = self.file_key(path)
             processing = (self.session or {}).setdefault("processing", {})
             channel_key = processing.get("current_channel") if processing.get("current_file") == key else None
-            processing["current_file"] = key
-            if channel_key is None: processing["current_channel"] = ""
-            self.schedule_session_save(); self.load_current_file(path, channel_key)
+            self.load_current_file(path, channel_key)
 
     def load_current_file(self, path, channel_key=None):
         self.cluster_panel.loading = True
@@ -810,8 +822,33 @@ class MainWindow(QMainWindow):
         self.set_busy(True, f"正在读取 {path.name}…")
         worker = LoadWorker(token, path, channel_key)
         self.track_worker(worker)
-        worker.signals.result.connect(self.on_trace_loaded); worker.signals.error.connect(self.on_worker_error)
+        worker.signals.result.connect(self.on_trace_loaded); worker.signals.error.connect(self.on_trace_load_error)
         self.thread_pool.start(worker)
+
+    def on_trace_load_error(self, payload):
+        if not isinstance(payload, dict) or payload.get("token") != self.load_token:
+            return
+        path = Path(payload["path"])
+        details = str(payload.get("details", ""))
+        reason = ("文件内容不完整或已损坏。" if "Segment does not start" in details
+                  else "文件无法读取。")
+        self.unreadable_files[str(path.resolve())] = reason
+        try:
+            row = self.files.index(path)
+        except ValueError:
+            row = self.file_list.currentRow()
+        if 0 <= row < self.file_list.count():
+            self.update_file_item(self.file_list.item(row), path)
+        self.cluster_panel.loading = False
+        self.cluster_panel.invalidate()
+        candidates = list(range(row + 1, len(self.files))) + list(range(0, max(row, 0)))
+        next_row = next((index for index in candidates
+                         if str(self.files[index].resolve()) not in self.unreadable_files), None)
+        if next_row is None:
+            self.set_busy(False, "当前文件夹中没有可读取的 TDMS 文件")
+            return
+        self.set_busy(True, f"{path.name} 无法读取，正在尝试下一文件…")
+        self.file_list.setCurrentRow(next_row)
 
     def track_worker(self, worker):
         self.workers.add(worker)
