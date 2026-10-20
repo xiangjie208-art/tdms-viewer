@@ -27,10 +27,13 @@ A Windows desktop application for scanning tunnelling microscopy (STM) I–t sig
 
 - Generates candidate clusters with spike detection and Gaussian summation adapted from recognition-tunnelling literature.
 - Exposes baseline, amplitude threshold, Gaussian width (FWHM), grouping threshold, and minimum peaks per cluster controls.
+- Detects extreme peak-amplitude outliers on a logarithmic scale by default and rejects every candidate cluster containing one; a manual upper limit is also available.
 - Uses pA for baseline and amplitude inputs. V/Volt/Volts channels use the current instrument calibration `1 V = 1000 pA`.
 - Runs on the current file or processes every TDMS file in the folder with one action.
 - Reports batch progress and failures, supports cancellation, and caches candidates per file for review.
 - Switches files and candidates directly from the clustering page; final intervals can be adjusted before saving.
+- Marks each file as valid or invalid, shows valid, invalid, and unreviewed counts, and saves decisions with the session.
+- Copies valid files in full to a selected folder, preserving original TDMS filenames, all channels, and metadata.
 - Clustering generates candidates, and manually confirmed intervals enter the screening records.
 
 ### Spectrum, records, and export
@@ -40,6 +43,7 @@ A Windows desktop application for scanning tunnelling microscopy (STM) I–t sig
 - Samples up to 10 blank records and overlays their median spectrum and interquartile range.
 - Provides candidate, review, no-feature, noisy, and excluded labels with notes.
 - Exports raw I–t CSV, per-signal CSV, feature summaries, PNG figures, session JSON, and HTML reports.
+- Builds a machine-learning dataset from saved intervals across multiple molecule folders, with editable labels for merging equivalent classes.
 - Produces white-background scientific figures with thin black lines, inward ticks, and no grid by default.
 - Saves progress automatically and supports named sessions, backup recovery, and relocated data folders.
 - Includes dark, light, and custom themes with configurable display grids and line widths.
@@ -72,15 +76,18 @@ python run_tdms_viewer.py
 3. Run **Preview Clusters** for one file or **Cluster Entire Folder** for batch detection.
 4. Review candidates one by one and adjust final boundaries with the waveform selection tools.
 5. Save confirmed intervals and add file labels or notes.
-6. Select records on the **Screening Records** page and export raw waveforms, figures, and session data.
+6. To build a machine-learning dataset, select the parent of the molecule folders, confirm or merge class labels, and start with the default `10 pA` feature-peak threshold.
+7. You can also select records on the **Screening Records** page and export raw waveforms, figures, and session data.
 
 Batch candidates use a runtime cache, while confirmed screening records remain available through the saved session.
 
+To screen complete files, mark each file as valid or invalid on the clustering page, then choose **Export Valid TDMS…** and select a destination folder. Original files are copied in the background; existing filenames are skipped, and the completion summary reports copied, skipped, and failed files.
+
 ## Clustering method
 
-The application identifies spikes in continuous regions above the baseline plus amplitude threshold. It places a unit-height Gaussian at each spike and sums the Gaussian traces. Continuous regions where the sum exceeds the grouping threshold become candidate clusters.
+The application identifies spikes in continuous regions above the baseline plus amplitude threshold. It detects extreme outliers with a `Q3 + 3×IQR` fence on log peak amplitudes, then places a unit-height Gaussian at every valid spike and sums the Gaussian traces. Continuous regions where the sum exceeds the grouping threshold become candidate clusters; a candidate containing an extreme outlier is rejected in full.
 
-The implementation translates Gaussian summation from recognition-tunnelling literature into an adjustable FWHM and explicit engineering boundary rules. It is designed for relatively stable baselines and upward pulses. Batch analysis applies the selected controls consistently and estimates the automatic baseline independently for each file.
+The implementation translates Gaussian summation from recognition-tunnelling literature into an adjustable FWHM and explicit engineering boundary rules. It is designed for relatively stable baselines and upward pulses. Batch analysis applies the selected controls consistently, estimates the automatic baseline independently for each file, and derives one outlier limit from all candidate peaks in the folder.
 
 See the [Chinese user guide](docs/USER_GUIDE.md) for detailed operation notes.
 

@@ -1,6 +1,7 @@
 import os
 
 import numpy as np
+import pytest
 from nptdms import ChannelObject, TdmsWriter
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -17,6 +18,14 @@ def write_trace(path, unit='nA', channel='ai0', pulse=True):
     with TdmsWriter(path) as writer:
         writer.write_segment([ChannelObject('Current', channel, values,
                              properties={'wf_increment': .001, 'unit_string': unit})])
+
+
+def write_peak_trace(path, positions, amplitudes_pa):
+    values = np.full(2000, -2.0)
+    values[np.asarray(positions)] = np.asarray(amplitudes_pa) - 2.0
+    with TdmsWriter(path) as writer:
+        writer.write_segment([ChannelObject('Current', 'ai0', values,
+                             properties={'wf_increment': .001, 'unit_string': 'pA'})])
 
 
 def wait_until(app, predicate):
@@ -49,6 +58,28 @@ def test_batch_converts_each_unit_continues_errors_and_cancels(tmp_path):
     partial.signals.item.connect(lambda item: (partial_items.append(item), partial.cancelled.set()))
     partial.run()
     assert len(partial_items) == 1 and 'result' in partial_items[0]
+    app.processEvents()
+
+
+def test_batch_uses_one_folder_wide_automatic_maximum(tmp_path):
+    app = QApplication.instance() or QApplication([])
+    first = tmp_path/'first.tdms'; second = tmp_path/'second.tdms'
+    write_peak_trace(first, np.arange(100, 600, 50), np.full(10, 30.0))
+    positions = np.r_[np.arange(100, 550, 50), [980, 1000]]
+    amplitudes = np.r_[np.full(9, 30.0), [500.0, 30.0]]
+    write_peak_trace(second, positions, amplitudes)
+    parameters = {'amplitude':15, 'baseline':-2, 'baseline_auto':False,
+                  'fwhm_ms':40, 'threshold':.1, 'input_unit':'pA',
+                  'max_amplitude_auto':True, 'max_amplitude':1000}
+    worker = BatchClusterWorker([first, second], 'Current/ai0', parameters)
+    items = []; done = []
+    worker.signals.item.connect(items.append); worker.signals.done.connect(done.append)
+    worker.run()
+    assert done == [{'success': 2, 'failed': 0, 'cancelled': False}]
+    assert [item['result']['parameters']['effective_max_amplitude'] for item in items] == pytest.approx([30.0, 30.0])
+    assert {item['result']['parameters']['maximum_source'] for item in items} == {'folder_auto'}
+    assert items[1]['result']['rejected_peaks'].tolist() == [980]
+    assert items[1]['result']['rejected_clusters'] == 1
     app.processEvents()
 
 

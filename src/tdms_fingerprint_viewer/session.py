@@ -32,6 +32,7 @@ DEFAULT_SESSION = {
     "data_folder": "",
     "blank_folder": "",
     "file_marks": {},
+    "file_validity": {},
     "file_notes": {},
     "regions": [],
     "view_ranges": {},
@@ -87,13 +88,17 @@ def normalize_session(loaded: dict | None, data_folder: str | Path) -> dict:
     processing["current_file"] = _relative_file_key(processing.get("current_file"), folder)
     state["processing"] = processing
 
-    for key in ("file_marks", "file_notes", "view_ranges"):
+    for key in ("file_marks", "file_validity", "file_notes", "view_ranges"):
         values = state.get(key, {})
         state[key] = {
             _relative_file_key(file_name, folder): value
             for file_name, value in values.items()
             if _relative_file_key(file_name, folder)
         } if isinstance(values, dict) else {}
+    state["file_validity"] = {
+        key: value for key, value in state["file_validity"].items()
+        if value in ("有效", "无效")
+    }
 
     regions = []
     for original in state.get("regions", []):

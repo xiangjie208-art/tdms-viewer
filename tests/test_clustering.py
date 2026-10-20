@@ -5,6 +5,7 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication
 from PySide6.QtTest import QTest
+from tdms_fingerprint_viewer import clustering as clustering_module
 from tdms_fingerprint_viewer.clustering import find_clusters
 from tdms_fingerprint_viewer.core import ChannelInfo
 from tdms_fingerprint_viewer.main_window import MainWindow
@@ -53,6 +54,42 @@ def test_minimum_peak_count_defaults_to_one_for_existing_parameters():
     assert result["parameters"]["min_peaks"] == 1
 
 
+def test_automatic_maximum_amplitude_uses_log_outer_fence_and_requires_enough_peaks():
+    assert clustering_module.automatic_maximum_amplitude(np.full(19, 10.0)) is None
+    amplitudes = np.r_[np.full(20, 10.0), 1000.0]
+    assert clustering_module.automatic_maximum_amplitude(amplitudes) == pytest.approx(10.0)
+
+
+def test_cluster_containing_peak_above_maximum_is_rejected_whole():
+    values = np.full(1000, -2.0)
+    values[[480, 520]] = 3.0
+    values[500] = 100.0
+    result = find_clusters(values, .001, params(max_amplitude=10.0))
+    assert result["peaks"].tolist() == [480, 520]
+    assert result["rejected_peaks"].tolist() == [500]
+    assert result["rows"] == []
+    assert result["rejected_clusters"] == 1
+
+
+def test_automatic_mode_records_statistical_limit_and_manual_fallback():
+    values = np.full(2000, -2.0)
+    values[np.arange(100, 1100, 50)] = 3.0
+    values[1500] = 100.0
+    automatic = find_clusters(values, .001, params(max_amplitude=1000.0, max_amplitude_auto=True))
+    assert automatic["parameters"]["effective_max_amplitude"] == pytest.approx(5.0)
+    assert automatic["parameters"]["maximum_source"] == "auto"
+    assert automatic["parameters"]["maximum_peak_count"] == 21
+    assert automatic["rejected_peaks"].tolist() == [1500]
+
+    sparse = np.full(1000, -2.0)
+    sparse[[400, 600]] = [3.0, 100.0]
+    fallback = find_clusters(sparse, .001, params(max_amplitude=50.0, max_amplitude_auto=True))
+    assert fallback["parameters"]["effective_max_amplitude"] == 50.0
+    assert fallback["parameters"]["maximum_source"] == "manual_fallback"
+    assert fallback["parameters"]["maximum_peak_count"] == 2
+    assert fallback["rejected_peaks"].tolist() == [600]
+
+
 def test_empty_result_and_automatic_baseline():
     result = find_clusters(np.full(1000, -3.), .001, params(baseline_auto=True))
     assert result["baseline"] == -3
@@ -76,7 +113,7 @@ def test_preview_review_save_and_recompute(tmp_path, monkeypatch, unit):
     channel = ChannelInfo('Current', 'ai0', len(values), .001, unit)
     w.on_trace_loaded({"token":w.load_token,"path":tmp_path/'sample.tdms',"values":values,
                        "selected":channel,"channels":[channel]})
-    panel = w.cluster_panel; panel.amplitude.setValue(1000)
+    panel = w.cluster_panel; panel.amplitude.setValue(1000); panel.max_amplitude.setValue(10000)
     panel.start()
     for _ in range(200):
         app.processEvents()
@@ -108,7 +145,7 @@ def test_preview_review_save_and_recompute(tmp_path, monkeypatch, unit):
     w.fft_timer.stop(); w.session_timer.stop(); w.session=None; w.close(); app.processEvents()
 
 
-@pytest.mark.parametrize("unit,factor", [("A", 1e12), ("nA", 1000), ("pA", 1),
+@pytest.mark.parametrize("unit,factor", [("A", 1e12), ("µA", 1e6), ("μA", 1e6), ("nA", 1000), ("pA", 1),
                                        ("V", 1000), ("Volts", 1000), ("volt", 1000)])
 def test_pa_inputs_convert_to_native_and_restore_saved_values(tmp_path, monkeypatch, unit, factor):
     monkeypatch.setenv("TDMS_VIEWER_DATA_DIR", str(tmp_path/'state'))
@@ -124,6 +161,10 @@ def test_pa_inputs_convert_to_native_and_restore_saved_values(tmp_path, monkeypa
     assert panel.baseline.value() == -2
     assert panel.parameters()['amplitude'] == pytest.approx(15/factor, abs=1e-25)
     assert panel.parameters()['baseline'] == pytest.approx(-2/factor, abs=1e-25)
+    assert panel.maximum_mode.currentIndex() == 0
+    assert not panel.max_amplitude.isEnabled()
+    assert panel.parameters()['max_amplitude_auto'] is True
+    assert panel.parameters()['max_amplitude'] == pytest.approx(1000/factor, abs=1e-25)
     assert panel.min_peaks.value() == panel.parameters()['min_peaks'] == 4
     assert panel.run_button.isEnabled()
     assert panel.parameters()['native_to_pa_factor'] == factor

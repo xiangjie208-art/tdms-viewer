@@ -9,6 +9,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QItemSelectionModel, QPoint, QPointF, Qt
 from PySide6.QtGui import QWheelEvent
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QMessageBox, QScrollArea, QTabWidget, QVBoxLayout, QWidget
 
 from tdms_fingerprint_viewer.main_window import MainWindow
@@ -42,6 +43,27 @@ def test_main_window_constructs_with_original_four_panel_controls(tmp_path, monk
     assert window.start_time_spin.toolTip() == "局部窗口起点；超过终点时同步调整终点。"
     window.session = None
     window.current_path = None
+    window.close()
+
+
+def test_screening_page_opens_machine_learning_dataset_dialog(monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    opened = []
+
+    class StubDialog:
+        def __init__(self, parent):
+            assert isinstance(parent, MainWindow)
+
+        def exec(self):
+            opened.append(True)
+
+    monkeypatch.setattr("tdms_fingerprint_viewer.main_window.DatasetDialog", StubDialog)
+    window = MainWindow()
+
+    assert window.dataset_button.text() == "制作机器学习数据集…"
+    window.dataset_button.click()
+
+    assert opened == [True]
     window.close()
     app.processEvents()
 
@@ -122,6 +144,38 @@ def test_open_data_folder_restores_last_file_and_channel(tmp_path, monkeypatch):
     assert window.file_list.currentRow() == 1
     assert loaded == [("sample_2.tdms", "Current/ai1")]
     window.session = None; window.close(); app.processEvents()
+
+
+def test_open_data_folder_marks_unreadable_file_and_loads_next_valid_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("TDMS_VIEWER_DATA_DIR", str(tmp_path / "state"))
+    app = QApplication.instance() or QApplication([])
+    data_folder = tmp_path / "data"; data_folder.mkdir()
+    unreadable = data_folder / "test_0.tdms"
+    unreadable.write_bytes(b"\x00" * 128)
+    valid = data_folder / "sample_1.tdms"
+    with TdmsWriter(valid) as writer:
+        writer.write_segment([ChannelObject(
+            "Current", "ai0", np.arange(100, dtype=float),
+            properties={"wf_increment": .001, "unit_string": "pA"},
+        )])
+    dialogs = []
+    monkeypatch.setattr(QMessageBox, "critical", lambda *args: dialogs.append(args))
+    window = MainWindow()
+
+    window.open_data_folder(data_folder)
+    for _ in range(300):
+        app.processEvents()
+        if window.current_path == valid:
+            break
+        QTest.qWait(10)
+
+    assert window.current_path == valid
+    assert str(unreadable.resolve()) in window.unreadable_files
+    unreadable_row = window.files.index(unreadable)
+    assert "无法读取" in window.file_list.item(unreadable_row).text()
+    assert dialogs == []
+    window.fft_timer.stop(); window.session_timer.stop(); window.session = None
+    window.close(); app.processEvents()
 
 
 def test_combined_plot_pixmap_uses_vertical_global_and_local_layout(tmp_path, monkeypatch):

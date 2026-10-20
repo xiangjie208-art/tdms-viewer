@@ -1,26 +1,19 @@
 """Manual review of transient Gaussian cluster candidates."""
 from threading import Event
+import numpy as np
 import pyqtgraph as pg
 from PySide6.QtCore import QObject, QRunnable, Signal, Qt
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QFormLayout, QHBoxLayout, QLabel, QPushButton,
-    QTableWidget, QTableWidgetItem, QAbstractItemView, QHeaderView, QProgressBar,
+    QTableWidget, QTableWidgetItem, QAbstractItemView, QHeaderView, QProgressBar, QButtonGroup, QStyle,
 )
-from .clustering import find_clusters
+from .clustering import automatic_maximum_amplitude, event_candidates, find_clusters
 from .core import minmax_envelope, load_trace
+from .units import CURRENT_TO_PA, VOLTAGE_TO_PA, VOLTAGE_UNITS, current_factor
 from .widgets import WheelSafeComboBox as QComboBox
 from .widgets import WheelSafeDoubleSpinBox as QDoubleSpinBox
 from .widgets import WheelSafeSpinBox as QSpinBox
-
-
-CURRENT_TO_PA = {"A": 1e12, "mA": 1e9, "uA": 1e6, "µA": 1e6, "μA": 1e6, "nA": 1e3, "pA": 1.0}
-# Instrument-specific calibration, not a general voltage/current conversion.
-VOLTAGE_TO_PA = 1000.0
-VOLTAGE_UNITS = {"v", "volt", "volts"}
-
-
-def current_factor(unit):
-    return VOLTAGE_TO_PA if unit.strip().casefold() in VOLTAGE_UNITS else CURRENT_TO_PA.get(unit.strip())
 
 
 def file_stamp(path):
@@ -43,11 +36,45 @@ class BatchClusterWorker(QRunnable):
 
     def run(self):
         success = failed = 0
+        preflight = {}
+        folder_maximum_pa = None
+        folder_peak_count = 0
+        if self.parameters.get("max_amplitude_auto", False):
+            amplitudes_pa = []
+            for path in self.files:
+                if self.cancelled.is_set(): break
+                try:
+                    stamp = file_stamp(path)
+                    values, channel, _ = load_trace(path, self.channel_key)
+                    if channel.key != self.channel_key:
+                        raise ValueError(f"缺少通道 {self.channel_key}")
+                    factor = current_factor(channel.unit)
+                    if factor is None:
+                        raise ValueError(f"无法换算单位 {channel.unit} 为 pA")
+                    baseline = (float(np.median(values)) if self.parameters["baseline_auto"]
+                                else self.parameters["baseline"] / factor)
+                    _, amplitudes = event_candidates(values, baseline, self.parameters["amplitude"] / factor)
+                    amplitudes_pa.extend((amplitudes * factor).tolist())
+                    preflight[path] = {"stamp": stamp}
+                except Exception as exc:
+                    preflight[path] = {"error": str(exc)}
+            if self.cancelled.is_set():
+                self.signals.done.emit({"success": 0, "failed": 0, "cancelled": True})
+                return
+            folder_peak_count = len(amplitudes_pa)
+            folder_maximum_pa = automatic_maximum_amplitude(amplitudes_pa)
+            if folder_maximum_pa is None:
+                folder_maximum_pa = float(self.parameters["max_amplitude"])
         for index, path in enumerate(self.files):
             if self.cancelled.is_set(): break
             payload = {"path": path, "index": index + 1}
             try:
+                prior = preflight.get(path, {})
+                if "error" in prior:
+                    raise ValueError(prior["error"])
                 stamp = file_stamp(path)
+                if prior and stamp != prior["stamp"]:
+                    raise ValueError("自动上限统计后文件发生变化，请重新运行")
                 values, channel, _ = load_trace(path, self.channel_key)
                 if channel.key != self.channel_key:
                     raise ValueError(f"缺少通道 {self.channel_key}")
@@ -58,6 +85,13 @@ class BatchClusterWorker(QRunnable):
                 parameters = dict(self.parameters, unit=channel.unit, native_to_pa_factor=factor, scope=0)
                 parameters["baseline"] /= factor
                 parameters["amplitude"] /= factor
+                if "max_amplitude" in parameters:
+                    parameters["max_amplitude"] /= factor
+                if folder_maximum_pa is not None:
+                    parameters["auto_max_amplitude"] = folder_maximum_pa / factor
+                    parameters["auto_maximum_source"] = ("folder_auto" if folder_peak_count >= 20
+                                                          else "manual_fallback")
+                    parameters["auto_maximum_peak_count"] = folder_peak_count
                 result = find_clusters(values, channel.dt, parameters)
                 if file_stamp(path) != stamp:
                     raise ValueError("分析期间文件发生变化，请重新运行")
@@ -103,6 +137,7 @@ class ClusterPanel(QWidget):
         self.loading = False
         self.batch_worker = None
         self.batch_cache = {}
+        self.file_annotations = {}
         self.restoring_parameters = False
         layout = QVBoxLayout(self)
         file_row = QHBoxLayout(); layout.addLayout(file_row)
@@ -123,6 +158,35 @@ class ClusterPanel(QWidget):
         self.next_file_button.clicked.connect(window.next_file)
         self.file_combo.activated.connect(window.file_list.setCurrentRow)
         window.file_list.currentRowChanged.connect(self.sync_file_selection)
+        review_row = QHBoxLayout(); layout.addLayout(review_row)
+        self.file_validity_label = QLabel("文件判定：未判断")
+        review_row.addWidget(self.file_validity_label, 1)
+        self.validity_group = QButtonGroup(self)
+        self.valid_file_button = QPushButton("有效")
+        self.invalid_file_button = QPushButton("无效")
+        for button, value, color, background in (
+            (self.valid_file_button, "有效", "#256C46", "#E5F3EB"),
+            (self.invalid_file_button, "无效", "#A33232", "#FBE9E7"),
+        ):
+            button.setCheckable(True)
+            button.setAccessibleName(f"将当前完整文件标为{value}")
+            button.setStyleSheet(
+                f"QPushButton:checked {{ color: {color}; background: {background}; border: 1px solid {color}; }}"
+            )
+            button.clicked.connect(lambda _=False, status=value: window.set_current_file_validity(status))
+            self.validity_group.addButton(button)
+            review_row.addWidget(button)
+        export_row = QHBoxLayout(); layout.addLayout(export_row)
+        self.file_screening_summary = QLabel("有效 0｜无效 0｜未判断 0")
+        self.file_screening_summary.setWordWrap(True)
+        self.export_valid_button = QPushButton("导出有效 TDMS…")
+        self.export_valid_button.clicked.connect(window.export_valid_tdms)
+        export_row.addWidget(self.file_screening_summary, 1)
+        export_row.addWidget(self.export_valid_button)
+        self.file_export_status = QLabel("")
+        self.file_export_status.setWordWrap(True)
+        self.file_export_status.hide()
+        layout.addWidget(self.file_export_status)
         self.refresh_files()
         form = QFormLayout(); layout.addLayout(form)
         self.unit_label = QLabel("未载入通道")
@@ -135,6 +199,14 @@ class ClusterPanel(QWidget):
         self.baseline.setEnabled(False); form.addRow("基线值（pA）", self.baseline)
         self.amplitude = self.spin(1e-6, 1e12, 15, 6)
         form.addRow("高于基线的幅值（pA）", self.amplitude)
+        self.maximum_mode = QComboBox()
+        self.maximum_mode.addItems(["自动（极端离群值）", "手动设置"])
+        self.maximum_mode.setToolTip("自动模式在峰幅值的对数尺度上使用 Q3 + 3×IQR 识别极端离群峰。")
+        form.addRow("最大峰限制", self.maximum_mode)
+        self.max_amplitude = self.spin(1e-6, 1e12, 1000, 6)
+        self.max_amplitude.setEnabled(False)
+        self.max_amplitude.setToolTip("自动统计少于 20 个候选峰时采用此上限。")
+        form.addRow("手动最大峰幅值（pA）", self.max_amplitude)
         self.width = self.spin(0.001, 10000, 40, 3); self.width.setSuffix(" ms")
         form.addRow("高斯窗宽（FWHM）", self.width)
         self.threshold = self.spin(0.000001, 0.999999, 0.1, 6)
@@ -175,8 +247,10 @@ class ClusterPanel(QWidget):
         note = QLabel("选择候选后可调整边界；保存后进入筛选记录。* 表示边缘簇。")
         note.setWordWrap(True); layout.addWidget(note)
         self.baseline_mode.currentIndexChanged.connect(lambda index: self.baseline.setEnabled(index == 1))
-        for control in (self.scope, self.baseline_mode): control.currentIndexChanged.connect(self.parameters_changed)
-        for control in (self.baseline, self.amplitude, self.width, self.threshold, self.min_peaks):
+        self.maximum_mode.currentIndexChanged.connect(lambda index: self.max_amplitude.setEnabled(index == 1))
+        for control in (self.scope, self.baseline_mode, self.maximum_mode):
+            control.currentIndexChanged.connect(self.parameters_changed)
+        for control in (self.baseline, self.amplitude, self.max_amplitude, self.width, self.threshold, self.min_peaks):
             control.valueChanged.connect(self.parameters_changed)
 
     @staticmethod
@@ -188,11 +262,12 @@ class ClusterPanel(QWidget):
     def refresh_files(self):
         if self.batch_worker is not None: self.batch_worker.cancelled.set()
         self.batch_cache.clear()
+        self.file_annotations.clear()
         self.file_combo.blockSignals(True)
         self.file_combo.clear()
         for path in self.window.files:
             self.file_combo.addItem(path.name)
-            self.file_combo.setItemData(self.file_combo.count()-1, str(path), Qt.ToolTipRole)
+            self.update_file_entry(self.file_combo.count()-1)
         self.file_combo.blockSignals(False)
         self.sync_file_selection(self.window.file_list.currentRow())
 
@@ -205,12 +280,58 @@ class ClusterPanel(QWidget):
         self.next_file_button.setEnabled(valid and row < count-1)
         self.file_position_label.setText(f"{row+1 if valid else 0} / {count}")
         self.file_combo.setToolTip(str(self.window.files[row]) if valid else "未载入数据文件夹")
+        self.refresh_file_screening()
+
+    def update_file_entry(self, row):
+        if not 0 <= row < min(len(self.window.files), self.file_combo.count()): return
+        path = self.window.files[row]
+        validity = self.window.file_validity(path)
+        name = path.name
+        if validity in ("有效", "无效"):
+            name = f"{name} [{validity}]"
+            icon = QStyle.SP_DialogApplyButton if validity == "有效" else QStyle.SP_DialogCancelButton
+            self.file_combo.setItemIcon(row, self.style().standardIcon(icon))
+        else:
+            self.file_combo.setItemIcon(row, QIcon())
+        suffix, details = self.file_annotations.get(path, ("", ""))
+        failure = self.window.unreadable_files.get(str(path.resolve()))
+        if failure:
+            suffix, details = "[无法读取]", failure
+        self.file_combo.setItemText(row, f"{name} {suffix}".rstrip())
+        tooltip = f"{path}\n文件判定：{validity}"
+        self.file_combo.setItemData(row, f"{tooltip}\n{details}".rstrip(), Qt.ToolTipRole)
+
+    def refresh_file_screening(self):
+        w = self.window
+        row = w.file_list.currentRow()
+        path = w.files[row] if 0 <= row < len(w.files) else None
+        validity = w.file_validity(path) if path else "未判断"
+        ready = (path is not None and w.session is not None and not self.loading
+                 and w.current_path == path and w.current_values is not None
+                 and str(path.resolve()) not in w.unreadable_files)
+        self.file_validity_label.setText(f"文件判定：{validity}")
+        self.validity_group.setExclusive(False)
+        for button, value in ((self.valid_file_button, "有效"), (self.invalid_file_button, "无效")):
+            button.setChecked(validity == value)
+            button.setEnabled(ready)
+        self.validity_group.setExclusive(True)
+        valid_count = invalid_count = 0
+        for candidate in w.files:
+            status = w.file_validity(candidate)
+            valid_count += status == "有效"
+            invalid_count += status == "无效"
+        self.file_screening_summary.setText(
+            f"有效 {valid_count}｜无效 {invalid_count}｜未判断 {len(w.files) - valid_count - invalid_count}"
+        )
+        self.export_valid_button.setEnabled(valid_count > 0 and w.tdms_export_worker is None)
 
     def parameters(self):
         if self.to_pa is None:
             raise ValueError("未配置通道单位到 pA 的换算。")
         return {"baseline_auto": self.baseline_mode.currentIndex() == 0, "baseline": self.baseline.value() / self.to_pa,
                 "amplitude": self.amplitude.value() / self.to_pa, "fwhm_ms": self.width.value(),
+                "max_amplitude_auto": self.maximum_mode.currentIndex() == 0,
+                "max_amplitude": self.max_amplitude.value() / self.to_pa,
                 "threshold": self.threshold.value(), "min_peaks": self.min_peaks.value(),
                 "unit": self.unit, "scope": self.scope.currentIndex(),
                 "input_unit": "pA", "native_to_pa_factor": self.to_pa}
@@ -241,7 +362,7 @@ class ClusterPanel(QWidget):
         self.loading = False
         self.invalidate()
         unit = self.window.current_channel.unit
-        self.to_pa = CURRENT_TO_PA.get(unit.strip())
+        self.to_pa = current_factor(unit)
         if unit.strip().casefold() in VOLTAGE_UNITS:
             self.to_pa = VOLTAGE_TO_PA
             self.unit_label.setText(f"pA 输入；原始通道：{unit}；标定：1 V = 1000 pA")
@@ -253,17 +374,21 @@ class ClusterPanel(QWidget):
         if unit != self.unit:
             self.unit = unit
             self.amplitude.setValue(15)
+            self.maximum_mode.setCurrentIndex(0)
+            self.max_amplitude.setValue(1000)
             self.baseline.setValue(0)
             self.min_peaks.setValue(1)
             saved = self.window.settings.get("cluster_parameters", {}).get(unit, {})
             for key, control in (("amplitude", self.amplitude), ("baseline", self.baseline),
+                                 ("max_amplitude", self.max_amplitude),
                                  ("fwhm_ms", self.width), ("threshold", self.threshold),
                                  ("min_peaks", self.min_peaks)):
                 value = saved.get(key)
                 if isinstance(value, (int, float)) and self.to_pa is not None:
-                    if key in ("amplitude", "baseline"): value *= self.to_pa
+                    if key in ("amplitude", "baseline", "max_amplitude"): value *= self.to_pa
                     control.setValue(value)
             self.baseline_mode.setCurrentIndex(0 if saved.get("baseline_auto", True) else 1)
+            self.maximum_mode.setCurrentIndex(0 if saved.get("max_amplitude_auto", True) else 1)
         self.restoring_parameters = False
         self.update_samples()
         self.update_buttons()
@@ -301,28 +426,36 @@ class ClusterPanel(QWidget):
             for j, value in enumerate(values): self.table.setItem(i, j, QTableWidgetItem(value))
         baseline_pa = result['baseline'] * self.to_pa
         threshold_pa = (result['baseline'] + result['parameters']['amplitude']) * self.to_pa
+        maximum_pa = result['parameters']['effective_max_amplitude'] * self.to_pa
+        source = {"auto": "自动上限", "folder_auto": "文件夹自动上限",
+                  "manual_fallback": "候选峰不足，采用手动上限", "manual": "手动上限"}.get(
+                      result['parameters']['maximum_source'], "最大峰上限")
         if self.baseline_mode.currentIndex() == 0:
             self.baseline.blockSignals(True); self.baseline.setValue(baseline_pa); self.baseline.blockSignals(False)
         self.status.setText(f"找到 {len(result['rows'])} 个候选簇；每簇至少 {result['parameters']['min_peaks']} 峰；"
-                            f"基线 {baseline_pa:.6g} pA；检测线 {threshold_pa:.6g} pA。")
+                            f"基线 {baseline_pa:.6g} pA；检测线 {threshold_pa:.6g} pA；"
+                            f"{source} {maximum_pa:.6g} pA；排除 {result['rejected_clusters']} 个含极大值的簇。")
         self.draw_overlays()
 
     def update_buttons(self):
+        self.refresh_file_screening()
         ready = not self.workers and not self.loading and self.to_pa is not None and self.batch_worker is None
         self.run_button.setEnabled(ready)
         if hasattr(self, "batch_button"):
             self.batch_button.setEnabled(ready and bool(self.window.files))
 
     def reset_file_names(self):
+        self.file_annotations.clear()
         for i, path in enumerate(self.window.files):
             if i < self.file_combo.count():
-                self.file_combo.setItemText(i, path.name)
-                self.file_combo.setItemData(i, str(path), Qt.ToolTipRole)
+                self.update_file_entry(i)
 
     def set_batch_controls(self, running):
-        for control in (self.scope, self.baseline_mode, self.amplitude, self.width, self.threshold, self.min_peaks):
+        for control in (self.scope, self.baseline_mode, self.amplitude, self.maximum_mode,
+                        self.max_amplitude, self.width, self.threshold, self.min_peaks):
             control.setEnabled(not running)
         self.baseline.setEnabled(not running and self.baseline_mode.currentIndex() == 1)
+        self.max_amplitude.setEnabled(not running and self.maximum_mode.currentIndex() == 1)
         self.cancel_batch_button.setEnabled(running)
         self.update_buttons()
 
@@ -333,7 +466,8 @@ class ClusterPanel(QWidget):
         self.invalidate(); self.batch_cache.clear(); self.reset_file_names(); self.batch_errors = []
         parameters = self.parameters()
         w.settings.setdefault("cluster_parameters", {})[self.unit] = parameters; w._save_settings()
-        parameters = dict(parameters, amplitude=self.amplitude.value(), baseline=self.baseline.value())
+        parameters = dict(parameters, amplitude=self.amplitude.value(), baseline=self.baseline.value(),
+                          max_amplitude=self.max_amplitude.value())
         worker = BatchClusterWorker(list(w.files), w.current_channel.key, parameters)
         self.batch_worker = worker
         self.batch_folder = w.data_folder
@@ -358,13 +492,13 @@ class ClusterPanel(QWidget):
         index = payload["index"] - 1
         if "error" in payload:
             self.batch_errors.append(f"{path.name}：{payload['error']}")
-            self.file_combo.setItemText(index, f"{path.name} [失败]")
-            self.file_combo.setItemData(index, self.batch_errors[-1], Qt.ToolTipRole)
+            self.file_annotations[path] = ("[失败]", self.batch_errors[-1])
         else:
             self.batch_cache[(str(path.resolve()), payload["channel"])] = payload
             count = len(payload["result"]["rows"])
-            self.file_combo.setItemText(index, f"{path.name} [{count} 簇]")
+            self.file_annotations[path] = (f"[{count} 簇]", "")
             if not self.loading and path == self.window.current_path: self.restore_batch_result()
+        self.update_file_entry(index)
         self.batch_status.setText(f"已处理 {payload['index']} / {len(worker.files)}：{path.name}；失败 {len(self.batch_errors)}")
         self.batch_status.setToolTip("\n".join(self.batch_errors))
 
@@ -387,8 +521,9 @@ class ClusterPanel(QWidget):
         try:
             if file_stamp(w.current_path) != entry["stamp"]:
                 self.batch_cache.pop(key, None)
+                self.file_annotations.pop(w.current_path, None)
                 row = w.file_list.currentRow()
-                if row >= 0: self.file_combo.setItemText(row, w.current_path.name)
+                if row >= 0: self.update_file_entry(row)
                 self.status.setText("文件已更新，请重新寻簇。")
                 return
         except OSError:
@@ -398,6 +533,8 @@ class ClusterPanel(QWidget):
         self.scope.setCurrentIndex(0)
         self.baseline_mode.setCurrentIndex(0 if parameters["baseline_auto"] else 1)
         self.amplitude.setValue(parameters["amplitude"] * self.to_pa)
+        self.maximum_mode.setCurrentIndex(0 if parameters.get("max_amplitude_auto", True) else 1)
+        self.max_amplitude.setValue(parameters.get("max_amplitude", 1000 / self.to_pa) * self.to_pa)
         self.baseline.setValue(parameters["baseline"] * self.to_pa)
         self.width.setValue(parameters["fwhm_ms"]); self.threshold.setValue(parameters["threshold"])
         self.min_peaks.setValue(parameters.get("min_peaks", 1))

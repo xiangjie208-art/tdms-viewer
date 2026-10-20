@@ -30,6 +30,8 @@ from .exporting import (
     DEFAULT_EXPORT_OPTIONS, region_export_basename, unique_export_basename,
     write_feature_csv, write_individual_signal_csvs, write_it_raw_csv,
 )
+from .dataset_dialog import DatasetDialog
+from .tdms_export import export_tdms_files
 from .plot_export import figure_pixmap
 from .cluster_panel import ClusterPanel
 from .layout_workspace import LayoutWorkspace
@@ -238,7 +240,7 @@ class ExportOptionsDialog(QDialog):
 
 class WorkerSignals(QObject):
     result = Signal(object)
-    error = Signal(str)
+    error = Signal(object)
     progress = Signal(str)
 
 
@@ -264,7 +266,9 @@ class LoadWorker(QRunnable):
                 "selected": selected, "channels": channels,
             })
         except Exception:
-            safe_emit(self.signals.error, traceback.format_exc())
+            safe_emit(self.signals.error, {
+                "token": self.token, "path": self.path, "details": traceback.format_exc(),
+            })
 
 
 class SpectrumWorker(QRunnable):
@@ -286,6 +290,26 @@ class SpectrumWorker(QRunnable):
             })
         except Exception:
             safe_emit(self.signals.error, traceback.format_exc())
+
+
+class TdmsExportWorker(QRunnable):
+    def __init__(self, files, destination):
+        super().__init__()
+        self.files, self.destination = tuple(files), Path(destination)
+        self.signals = WorkerSignals()
+
+    @Slot()
+    def run(self):
+        try:
+            summary = export_tdms_files(
+                self.files, self.destination,
+                progress=lambda completed, total, name: safe_emit(
+                    self.signals.progress, f"正在导出 {completed} / {total}：{name}",
+                ),
+            )
+            safe_emit(self.signals.result, {"summary": summary, "destination": self.destination})
+        except Exception as exc:
+            safe_emit(self.signals.error, str(exc))
 
 
 class BlankWorker(QRunnable):
@@ -348,6 +372,7 @@ class MainWindow(QMainWindow):
         self.current_values = None
         self.current_channel = None
         self.current_channels = []
+        self.unreadable_files = {}
         self.current_stats = {}
         self.current_indices = (0, 0)
         self.last_spectrum = None
@@ -357,6 +382,7 @@ class MainWindow(QMainWindow):
         self.load_token = self.spectrum_token = self.blank_token = 0
         self.pending_region = None
         self.workers = set()
+        self.tdms_export_worker = None
         self.plot_theme = dict(PLOT_THEMES["深色高对比（推荐）"])
         self.settings_path = app_data_dir() / "settings.json"
         self.settings = self._load_settings()
@@ -584,8 +610,15 @@ class MainWindow(QMainWindow):
         self.delete_region_button.clicked.connect(self.delete_selected_region)
         self.export_selected_button.clicked.connect(self.export_selected_results); self.export_results_button.clicked.connect(self.export_results)
         row.addWidget(self.delete_region_button); row.addWidget(self.export_selected_button); row.addWidget(self.export_results_button); layout.addLayout(row)
+        self.dataset_button = QPushButton("制作机器学习数据集…")
+        self.dataset_button.clicked.connect(self.open_dataset_dialog)
+        layout.addWidget(self.dataset_button)
         hint = QLabel("区间表支持 Ctrl/Shift 多选。快捷键：←/→ 移动选择框，↑/↓ 切换文件，Shift+←/→ 精细移动，Ctrl+← 缩窄、Ctrl+→ 加宽；A 候选，R 待复查，X 排除，S 保存区间，F 切换 FFT 范围，Space 显示/隐藏空白。")
         hint.setWordWrap(True); hint.setStyleSheet("color:#56606A;padding:5px"); layout.addWidget(hint); return tab
+
+    def open_dataset_dialog(self):
+        dialog = DatasetDialog(self)
+        dialog.exec()
 
     def time_display_scale(self):
         return 1000.0 if self.time_unit_combo.currentIndex() == 1 else 1.0
@@ -763,7 +796,12 @@ class MainWindow(QMainWindow):
         if self.active_session_file: self.settings["last_session_file"] = str(self.active_session_file)
         else: self.settings.pop("last_session_file", None)
         self._save_settings(); self._apply_processing_controls()
-        self.cache.clear(); self.blank_reference = None
+        self.load_token += 1
+        self.cache.clear(); self.blank_reference = None; self.unreadable_files = {}
+        self.current_path = None; self.current_values = None; self.current_channel = None; self.current_channels = []
+        self.current_indices = (0, 0); self.current_stats = {}; self.last_spectrum = None
+        self.overview_curve.setData([], []); self.detail_curve.setData([], [])
+        self.spectrum_plot.getPlotItem().clear(); self.peaks_label.setText("主要峰：尚未计算")
         self.file_list.blockSignals(True); self.file_list.clear()
         for path in files:
             item = QListWidgetItem(); item.setData(Qt.UserRole, str(path)); self.file_list.addItem(item); self.update_file_item(item, path)
@@ -778,19 +816,84 @@ class MainWindow(QMainWindow):
         if self.blank_folder and self.blank_overlay_check.isChecked(): self.start_blank_reference()
 
     def update_file_item(self, item, path):
+        failure = self.unreadable_files.get(str(path.resolve()))
+        if failure:
+            item.setText(f"⚠  {path.name} [无法读取]")
+            item.setForeground(QColor("#EF5350"))
+            item.setToolTip(f"{path}\n{failure}")
+            return
         marks = (self.session or {}).get("file_marks", {})
         tag = marks.get(self.file_key(path), marks.get(path.name, "未标记"))
-        item.setText(f"{TAG_SYMBOLS.get(tag, '○')}  {path.name}"); item.setForeground(QColor(TAG_COLORS.get(tag, "#AAB2BD")))
-        item.setToolTip(f"{path}\n标记：{tag}")
+        validity = self.file_validity(path)
+        suffix = f" [{validity}]" if validity in ("有效", "无效") else ""
+        item.setText(f"{TAG_SYMBOLS.get(tag, '○')}  {path.name}{suffix}")
+        item.setForeground(QColor(TAG_COLORS.get(tag, "#AAB2BD")))
+        item.setToolTip(f"{path}\n标记：{tag}\n文件判定：{validity}")
+
+    def file_validity(self, path):
+        value = (self.session or {}).get("file_validity", {}).get(self.file_key(path), "未判断")
+        return value if value in ("有效", "无效") else "未判断"
+
+    def set_current_file_validity(self, validity):
+        row = self.file_list.currentRow()
+        if (validity not in ("有效", "无效") or self.session is None or self.cluster_panel.loading
+                or not 0 <= row < len(self.files) or self.current_values is None):
+            return
+        path = self.files[row]
+        if self.current_path != path or str(path.resolve()) in self.unreadable_files:
+            return
+        self.session.setdefault("file_validity", {})[self.file_key(path)] = validity
+        self.update_file_item(self.file_list.item(row), path)
+        self.cluster_panel.update_file_entry(row)
+        self.cluster_panel.refresh_file_screening()
+        self.schedule_session_save()
+
+    def export_valid_tdms(self):
+        if self.tdms_export_worker is not None: return
+        files = [path for path in self.files if self.file_validity(path) == "有效"]
+        if not files:
+            QMessageBox.information(self, "导出有效 TDMS", "请先将需要保留的文件标为有效。")
+            return
+        folder = QFileDialog.getExistingDirectory(self, "选择有效 TDMS 导出文件夹", str(self.data_folder))
+        if not folder: return
+        worker = TdmsExportWorker(files, Path(folder))
+        self.tdms_export_worker = worker
+        self.cluster_panel.refresh_file_screening()
+        self.cluster_panel.file_export_status.setText(f"准备导出 {len(files)} 个 TDMS 文件…")
+        self.cluster_panel.file_export_status.setToolTip("")
+        self.cluster_panel.file_export_status.show()
+        self.track_worker(worker)
+        worker.signals.progress.connect(self.cluster_panel.file_export_status.setText)
+        worker.signals.result.connect(self.on_tdms_export_finished)
+        worker.signals.error.connect(self.on_tdms_export_error)
+        self.thread_pool.start(worker)
+
+    def on_tdms_export_finished(self, payload):
+        self.tdms_export_worker = None
+        self.cluster_panel.refresh_file_screening()
+        summary, destination = payload["summary"], payload["destination"]
+        message = f"导出完成：成功 {len(summary.copied)}｜跳过 {len(summary.skipped)}｜失败 {len(summary.errors)}"
+        self.cluster_panel.file_export_status.setText(message)
+        details = [f"跳过：{name}（目标已存在）" for name in summary.skipped] + summary.errors
+        self.cluster_panel.file_export_status.setToolTip("\n".join([str(destination), *details]))
+        if summary.errors:
+            QMessageBox.warning(self, "TDMS 导出结果", f"{message}\n{destination}\n\n" + "\n".join(summary.errors[:10]))
+        else:
+            QMessageBox.information(self, "TDMS 导出结果", f"{message}\n{destination}")
+
+    def on_tdms_export_error(self, details):
+        self.tdms_export_worker = None
+        self.cluster_panel.refresh_file_screening()
+        self.cluster_panel.file_export_status.setText("导出失败")
+        self.cluster_panel.file_export_status.setToolTip(details)
+        QMessageBox.warning(self, "TDMS 导出失败", details)
 
     def on_file_row_changed(self, row):
         if 0 <= row < len(self.files):
             path = self.files[row]; key = self.file_key(path)
             processing = (self.session or {}).setdefault("processing", {})
             channel_key = processing.get("current_channel") if processing.get("current_file") == key else None
-            processing["current_file"] = key
-            if channel_key is None: processing["current_channel"] = ""
-            self.schedule_session_save(); self.load_current_file(path, channel_key)
+            self.load_current_file(path, channel_key)
 
     def load_current_file(self, path, channel_key=None):
         self.cluster_panel.loading = True
@@ -802,8 +905,34 @@ class MainWindow(QMainWindow):
         self.set_busy(True, f"正在读取 {path.name}…")
         worker = LoadWorker(token, path, channel_key)
         self.track_worker(worker)
-        worker.signals.result.connect(self.on_trace_loaded); worker.signals.error.connect(self.on_worker_error)
+        worker.signals.result.connect(self.on_trace_loaded); worker.signals.error.connect(self.on_trace_load_error)
         self.thread_pool.start(worker)
+
+    def on_trace_load_error(self, payload):
+        if not isinstance(payload, dict) or payload.get("token") != self.load_token:
+            return
+        path = Path(payload["path"])
+        details = str(payload.get("details", ""))
+        reason = ("文件内容不完整或已损坏。" if "Segment does not start" in details
+                  else "文件无法读取。")
+        self.unreadable_files[str(path.resolve())] = reason
+        try:
+            row = self.files.index(path)
+        except ValueError:
+            row = self.file_list.currentRow()
+        if 0 <= row < self.file_list.count():
+            self.update_file_item(self.file_list.item(row), path)
+            self.cluster_panel.update_file_entry(row)
+        self.cluster_panel.loading = False
+        self.cluster_panel.invalidate()
+        candidates = list(range(row + 1, len(self.files))) + list(range(0, max(row, 0)))
+        next_row = next((index for index in candidates
+                         if str(self.files[index].resolve()) not in self.unreadable_files), None)
+        if next_row is None:
+            self.set_busy(False, "当前文件夹中没有可读取的 TDMS 文件")
+            return
+        self.set_busy(True, f"{path.name} 无法读取，正在尝试下一文件…")
+        self.file_list.setCurrentRow(next_row)
 
     def track_worker(self, worker):
         self.workers.add(worker)
@@ -1277,7 +1406,7 @@ class MainWindow(QMainWindow):
             return state
         file_keys = {region.get("file") for region in regions}
         file_names = {region.get("file_name") for region in regions}
-        for key in ("file_marks", "file_notes"):
+        for key in ("file_marks", "file_validity", "file_notes"):
             state[key] = {
                 file_name: value for file_name, value in self.session.get(key, {}).items()
                 if file_name in file_keys or Path(file_name).name in file_names
@@ -1506,6 +1635,7 @@ class MainWindow(QMainWindow):
             if tag and tag != "未标记"
         }
         processed.update(key for key, note in self.session.get("file_notes", {}).items() if str(note).strip())
+        processed.update(key for key, value in self.session.get("file_validity", {}).items() if value in ("有效", "无效"))
         processed.update(region.get("file") for region in self.session.get("regions", []) if region.get("file"))
         available = {self.file_key(path) for path in self.files}
         return len(processed & available)
