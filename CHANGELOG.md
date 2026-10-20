@@ -4,6 +4,10 @@ All notable changes are documented here. This project follows semantic versionin
 
 ## [Unreleased]
 
+## [2.13.0] - 2026-10-20
+
+- Added valid/invalid file screening on the clustering page, with session persistence, file-list labels, and folder-level review counts.
+- Added background export of complete valid TDMS files to a chosen folder, preserving originals, skipping existing filenames, and reporting copied, skipped, and failed files.
 - Added automatic extreme peak-amplitude rejection using a conservative `Q3 + 3×IQR` fence on logarithmic peak amplitudes, with one shared limit for folder-wide clustering.
 - Added a manual maximum-peak control and excluded complete candidate clusters containing an over-limit peak, with the applied limit and rejection count shown in the cluster status.
 - Marked unreadable or damaged TDMS files in the file list, automatically continued to the next readable file, and cleared the previous waveform when switching data folders.

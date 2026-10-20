@@ -32,6 +32,8 @@ A Windows desktop application for scanning tunnelling microscopy (STM) I–t sig
 - Runs on the current file or processes every TDMS file in the folder with one action.
 - Reports batch progress and failures, supports cancellation, and caches candidates per file for review.
 - Switches files and candidates directly from the clustering page; final intervals can be adjusted before saving.
+- Marks each file as valid or invalid, shows valid, invalid, and unreviewed counts, and saves decisions with the session.
+- Copies valid files in full to a selected folder, preserving original TDMS filenames, all channels, and metadata.
 - Clustering generates candidates, and manually confirmed intervals enter the screening records.
 
 ### Spectrum, records, and export
@@ -78,6 +80,8 @@ python run_tdms_viewer.py
 7. You can also select records on the **Screening Records** page and export raw waveforms, figures, and session data.
 
 Batch candidates use a runtime cache, while confirmed screening records remain available through the saved session.
+
+To screen complete files, mark each file as valid or invalid on the clustering page, then choose **Export Valid TDMS…** and select a destination folder. Original files are copied in the background; existing filenames are skipped, and the completion summary reports copied, skipped, and failed files.
 
 ## Clustering method
 
